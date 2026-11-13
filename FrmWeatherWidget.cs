@@ -51,6 +51,16 @@ namespace frmweatherwid
         private readonly System.Windows.Forms.Timer loadingTimer   = new() { Interval = 300 };
         private readonly System.Windows.Forms.Timer wallpaperTimer = new() { Interval = WallpaperRotateMs };
         private readonly System.Windows.Forms.Timer quoteTimer     = new() { Interval = QuoteRotateMs };
+        private readonly System.Windows.Forms.Timer updateTimer    = new() { Interval = FirstUpdateCheckMs };
+
+        // ------------------------------------------------------------------ auto-update
+        private const int FirstUpdateCheckMs = 60_000;            // 1 min after start (don't slow startup)
+        private const int UpdateCheckMs      = 6 * 60 * 60_000;   // then every 6 h
+        private readonly UpdateService updateService = new(Http);
+        private readonly string? updatedFrom;                     // set when we were just restarted by an update
+        private bool isCheckingUpdate;
+        private bool dialogOpen;
+        private (string File, UpdateInfo Info)? pendingUpdate;   // downloaded + verified, waiting to be applied
 
         // ------------------------------------------------------------------ state
         private WeatherData? weather;
@@ -75,8 +85,9 @@ namespace frmweatherwid
 
         // ================================================================== setup
 
-        public FrmWeatherWidget()
+        public FrmWeatherWidget(string? updatedFrom = null)
         {
+            this.updatedFrom = updatedFrom;
             SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint, true);
 
             FormBorderStyle       = FormBorderStyle.None;
@@ -165,6 +176,13 @@ namespace frmweatherwid
             loadingTimer.Tick   += (_, _) => { loadingDots++; pnlStatus.Invalidate(); };
             wallpaperTimer.Tick += (_, _) => ShowNextWallpaper();
             quoteTimer.Tick     += (_, _) => ShowNextQuote();
+            updateTimer.Tick    += async (_, _) =>
+            {
+                updateTimer.Interval = UpdateCheckMs;
+                await CheckForUpdateAsync(manual: false);
+            };
+            // An update downloaded while the widget was on screen is applied once it's hidden.
+            VisibleChanged += (_, _) => { if (!Visible) TryApplyPendingUpdate(); };
 
             trayIcon = CreateTrayIcon();
             UpdateTray();
@@ -233,6 +251,15 @@ namespace frmweatherwid
             var weatherTask = UpdateWeatherAsync(relocate: true);
             _ = LoadWallpapersAsync();
             _ = LoadQuotesAsync();
+
+            if (UpdateService.CanSelfUpdate)
+            {
+                _ = UpdateService.CleanupAsync();
+                updateTimer.Start();
+            }
+            if (updatedFrom is not null)
+                trayIcon.ShowBalloonTip(5000, "Weather Widget",
+                    $"Đã cập nhật lên v{UpdateService.CurrentVersion.ToString(3)} (từ v{updatedFrom}).", ToolTipIcon.Info);
             await weatherTask;
         }
 
@@ -270,6 +297,7 @@ namespace frmweatherwid
                 loadingTimer.Dispose();
                 wallpaperTimer.Dispose();
                 quoteTimer.Dispose();
+                updateTimer.Dispose();
 
                 trayIcon.Visible = false;
                 trayIcon.Icon?.Dispose();
@@ -424,11 +452,93 @@ namespace frmweatherwid
 
         private async Task PickCityAsync()
         {
-            using var dlg = new CityPickerForm(locationService);
-            if (dlg.ShowDialog() != DialogResult.OK || dlg.Selected is not { } c) return;
+            if (dialogOpen) return;
+            CityResult? c;
+            dialogOpen = true;
+            try
+            {
+                using var dlg = new CityPickerForm(locationService);
+                c = dlg.ShowDialog() == DialogResult.OK ? dlg.Selected : null;
+            }
+            finally
+            {
+                dialogOpen = false;
+            }
+            if (c is null)
+            {
+                TryApplyPendingUpdate();
+                return;
+            }
             locationService.ManualLocation = new GeoLocation(c.Latitude, c.Longitude, c.Name, LocationSource.Manual);
             await UpdateWeatherAsync(relocate: true);
+            TryApplyPendingUpdate();
         }
+
+        // ================================================================== auto-update
+
+        /// <param name="manual">From the tray menu: report the result and apply right away even if the widget is open.</param>
+        private async Task CheckForUpdateAsync(bool manual)
+        {
+            if (!UpdateService.CanSelfUpdate)
+            {
+                if (manual) Notify("Bản đang chạy không phải bản phát hành (WeatherWidget.exe) nên không tự cập nhật.", ToolTipIcon.Info);
+                return;
+            }
+            if (pendingUpdate is not null)
+            {
+                TryApplyPendingUpdate(force: manual);
+                return;
+            }
+            if (isCheckingUpdate) return;
+            isCheckingUpdate = true;
+            try
+            {
+                var info = await updateService.CheckAsync();
+                if (info is null)
+                {
+                    if (manual) Notify($"Đang dùng bản mới nhất (v{UpdateService.CurrentVersion.ToString(3)}).", ToolTipIcon.Info);
+                    return;
+                }
+                if (manual) Notify($"Đang tải bản {info.Tag}…", ToolTipIcon.Info);
+
+                var file = await updateService.DownloadAsync(info);
+                if (IsDisposed) return;
+                pendingUpdate = (file, info);
+                TryApplyPendingUpdate(force: manual);
+            }
+            catch
+            {
+                // network / GitHub down / disk: try again at the next check
+                if (manual && !IsDisposed) Notify("Không kiểm tra được bản cập nhật. Sẽ thử lại sau.", ToolTipIcon.Warning);
+            }
+            finally
+            {
+                isCheckingUpdate = false;
+            }
+        }
+
+        /// <summary>Swap the exe and restart — only when nobody is looking at the widget (unless forced).</summary>
+        private void TryApplyPendingUpdate(bool force = false)
+        {
+            if (pendingUpdate is not { } p || dialogOpen || IsDisposed) return;
+            if (Visible && !force) return; // VisibleChanged will call us again when hidden
+
+            try
+            {
+                var exe = UpdateService.Apply(p.File);
+                pendingUpdate = null;
+                Program.RestartAfterExit = (exe, Program.UpdatedArgs(UpdateService.CurrentVersion));
+                Application.Exit();
+            }
+            catch
+            {
+                pendingUpdate = null; // files untouched/rolled back — retry on the next check
+                try { File.Delete(p.File); } catch { }
+                Notify($"Không cài được bản {p.Info.Tag} (thư mục chỉ đọc?).", ToolTipIcon.Warning);
+            }
+        }
+
+        private void Notify(string text, ToolTipIcon icon) => trayIcon.ShowBalloonTip(4000, "Weather Widget", text, icon);
 
         private static (int Index, string Label) ClassifyAqi(int aqi) => aqi switch
         {
@@ -610,13 +720,19 @@ namespace frmweatherwid
             var mnuLocation = new ToolStripMenuItem("📍 Vị trí");
             mnuLocation.DropDownItems.AddRange([mnuCurrent, new ToolStripSeparator(), mnuAuto, mnuPick]);
 
+            var mnuUpdate = new ToolStripMenuItem("⬆ Kiểm tra cập nhật", null, async (_, _) => await CheckForUpdateAsync(manual: true));
+            var mnuAbout  = new ToolStripMenuItem($"Weather Widget v{UpdateService.CurrentVersion.ToString(3)}") { Enabled = false };
+
             menu.Items.AddRange([mnuToggle, mnuRefresh, mnuLocation, new ToolStripSeparator(),
+                                 mnuAbout, mnuUpdate, new ToolStripSeparator(),
                                  new ToolStripMenuItem("Thoát", null, (_, _) => Application.Exit())]);
             menu.Opening += (_, _) =>
             {
                 mnuToggle.Text  = Visible ? "Ẩn Widget" : "Hiện Widget";
                 mnuCurrent.Text = $"Hiện tại: {location.Name} ({SourceLabel(location.Source)})";
                 mnuAuto.Checked = location.Source != LocationSource.Manual;
+                mnuUpdate.Text  = pendingUpdate is { } p ? $"⬆ Cài bản {p.Info.Tag} ngay" : "⬆ Kiểm tra cập nhật";
+                mnuUpdate.Enabled = !isCheckingUpdate;
             };
 
             var icon = new NotifyIcon { Text = "Weather Widget", ContextMenuStrip = menu, Visible = true };
