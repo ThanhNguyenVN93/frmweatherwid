@@ -10,6 +10,7 @@ namespace frmweatherwid
     public sealed class FrmWeatherWidget : Form
     {
         // ------------------------------------------------------------------ config
+        // Internal id for the Run registry value and the cache folder — kept as-is so existing installs keep their settings.
         private const string AppName         = "FrmWeatherWidget";
         private const string RunKeyPath      = @"Software\Microsoft\Windows\CurrentVersion\Run";
         private const string SettingsKeyPath = @"Software\FrmWeatherWidget";
@@ -189,7 +190,7 @@ namespace frmweatherwid
             };
             var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(60) };
             // MET Norway rejects requests without an identifying User-Agent.
-            client.DefaultRequestHeaders.UserAgent.ParseAdd($"{AppName}/1.0");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd($"WeatherWidget/{Application.ProductVersion}");
             return client;
         }
 

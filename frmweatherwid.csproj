@@ -11,7 +11,25 @@
     <!-- Layout is in fixed pixels: let Windows scale the whole window on 125%/150% displays
          instead of growing only the fonts (which made text overflow its panels). -->
     <ApplicationHighDpiMode>DpiUnawareGdiScaled</ApplicationHighDpiMode>
-    <Version>1.1.0</Version>
+    <ApplicationIcon>app.ico</ApplicationIcon>
+  </PropertyGroup>
+
+  <!-- Assembly / file version info (Explorer → Properties → Details, Task Manager) -->
+  <PropertyGroup>
+    <AssemblyName>WeatherWidget</AssemblyName>
+    <RootNamespace>frmweatherwid</RootNamespace>
+    <Product>Weather Widget</Product>
+    <AssemblyTitle>Weather Widget</AssemblyTitle>
+    <Description>Widget thời tiết trên khay hệ thống: nhiệt độ, độ ẩm, gió, chất lượng không khí theo vị trí hiện tại.</Description>
+    <Company>Nguyen Thanh</Company>
+    <Authors>Nguyen Thanh</Authors>
+    <Copyright>Copyright © 2026 Nguyen Thanh</Copyright>
+    <NeutralLanguage>vi-VN</NeutralLanguage>
+    <RepositoryUrl>https://github.com/ThanhNguyenVN93/frmweatherwid</RepositoryUrl>
+    <Version>1.2.0</Version>
+    <FileVersion>1.2.0.0</FileVersion>
+    <!-- keep "1.2.0" instead of "1.2.0+<git hash>" in Product version -->
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
   </PropertyGroup>
 
   <!-- dotnet publish -c Release -r win-x64 → one self-contained exe (no .NET install needed) -->

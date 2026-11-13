@@ -24,6 +24,7 @@ namespace frmweatherwid
             ClientSize      = new Size(420, 330);
             Font            = new Font("Segoe UI", 9.5f);
             Padding         = new Padding(12);
+            try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { /* keep default */ }
 
             txtQuery   = new TextBox { Bounds = new Rectangle(12, 12, 300, 27), PlaceholderText = "VD: Da Nang, Ho Chi Minh, Tokyo…" };
             btnSearch  = new Button  { Bounds = new Rectangle(318, 11, 90, 29), Text = "Tìm" };
