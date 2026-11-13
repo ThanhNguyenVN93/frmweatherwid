@@ -20,10 +20,14 @@ namespace frmweatherwid
 
         private static string? ExePath => Environment.ProcessPath;
 
-        /// <summary>True for the single-file publish (Assembly.Location is empty there) named WeatherWidget.exe.</summary>
+        /// <summary>
+        /// True only for the single-file publish named WeatherWidget.exe.
+        /// A normal build (bin\...) has WeatherWidget.dll next to the exe; the single-file bundle doesn't.
+        /// </summary>
         public static bool CanSelfUpdate =>
-            string.IsNullOrEmpty(typeof(UpdateService).Assembly.Location) &&
-            ExePath is { } p && string.Equals(Path.GetFileName(p), AssetName, StringComparison.OrdinalIgnoreCase);
+            ExePath is { } p &&
+            string.Equals(Path.GetFileName(p), AssetName, StringComparison.OrdinalIgnoreCase) &&
+            !File.Exists(Path.ChangeExtension(p, ".dll"));
 
         /// <summary>Newer release info, or null when already up to date.</summary>
         public async Task<UpdateInfo?> CheckAsync(CancellationToken ct = default)
