@@ -34,6 +34,7 @@ namespace frmweatherwid
             var btnCancel = new Button { Bounds = new Rectangle(318, 290, 90, 29), Text = L.T("Huỷ", "Cancel"), DialogResult = DialogResult.Cancel };
 
             Controls.AddRange([txtQuery, btnSearch, lblInfo, lstResults, btnOk, btnCancel]);
+            Visuals.ScaleDialog(this);
             AcceptButton = btnSearch;
             CancelButton = btnCancel;
 

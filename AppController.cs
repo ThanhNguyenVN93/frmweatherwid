@@ -20,6 +20,7 @@ namespace frmweatherwid
         private const string RunKeyPath      = @"Software\Microsoft\Windows\CurrentVersion\Run";
         private const string SettingsKeyPath = @"Software\FrmWeatherWidget";
         private const string DonateUrl       = "https://nguyenthanhdev.com/donate/";
+        public const string RepoUrl          = "https://github.com/ThanhNguyenVN93/frmweatherwid";
 
         private const int RefreshMs          = 15 * 60_000;    // also how fresh the "rain soon" alert is
         private const int RetryMs            = 5 * 60_000;     // after every provider failed
@@ -28,9 +29,6 @@ namespace frmweatherwid
         private const int QuoteRotateMs      = 15_000;
         private const int FirstUpdateCheckMs = 60_000;         // 1 min after start (don't slow startup)
         private const int UpdateCheckMs      = 6 * 60 * 60_000;
-        private const int RainAlertMinutes   = 60;             // warn when rain starts within this window
-        private const int AqiAlertLevel      = 151;            // "Unhealthy" and worse
-        private const int AqiAlertReset      = 100;            // re-arm once it's back to Moderate
 
         internal static readonly HttpClient Http = CreateHttpClient();
 
@@ -48,7 +46,9 @@ namespace frmweatherwid
         public bool IsLocating { get; private set; }
         public int LoadingDots { get; private set; }
         public Image WeatherIcon { get; private set; }
-        public Bitmap? Wallpaper => wallpapers.Count > 0 ? wallpapers[wallpaperIndex] : null;
+        public Bitmap? Wallpaper => wallpapers.Count > 0 ? wallpapers[wallpaperIndex].Image : null;
+        /// <summary>Author / licence of the current wallpaper (shown as a tooltip).</summary>
+        public string WallpaperCredit => wallpapers.Count > 0 ? wallpapers[wallpaperIndex].Credit : "";
         public (string Text, string Author)? Quote => quotes.Count > 0 ? quotes[quoteIndex] : null;
 
         /// <summary>Weather/location/settings changed → repaint everything.</summary>
@@ -77,7 +77,7 @@ namespace frmweatherwid
         private bool relocateOnNextRefresh;          // set after resume from sleep
         private bool refreshQueued, relocateQueued;  // request that arrived while updating
 
-        private readonly List<Bitmap> wallpapers = [];
+        private readonly List<(Bitmap Image, string Credit)> wallpapers = [];
         private int wallpaperIndex;
         private (WallpaperMode, string) loadedWallpaperSource;
         private readonly List<(string Text, string Author)> quotes = [];
@@ -95,12 +95,12 @@ namespace frmweatherwid
 
         // ================================================================== setup
 
-        private readonly bool openSettingsOnStart;
+        private readonly StartOptions options;
 
-        public AppController(string? updatedFrom, bool openSettings = false)
+        public AppController(StartOptions options)
         {
-            this.updatedFrom = updatedFrom;
-            openSettingsOnStart = openSettings;
+            this.options = options;
+            updatedFrom  = options.UpdatedFrom;
             AppLog.Prune();
             AppLog.Info($"Start v{UpdateService.CurrentVersion.ToString(3)}" + (updatedFrom is null ? "" : $" (updated from {updatedFrom})"));
 
@@ -109,6 +109,7 @@ namespace frmweatherwid
 
             Location    = locationService.ManualLocation ?? locationService.CachedLocation ?? LocationService.DefaultLocation;
             WeatherIcon = Visuals.CreatePlaceholderIcon(new Size(120, 120));
+            LoadWeatherCache(); // show the last known weather instantly (even offline) until the first fetch lands
 
             tray = CreateTrayIcon();
             UpdateTray();
@@ -136,6 +137,7 @@ namespace frmweatherwid
 
             EnsureWidgets();
             InitStartupSetting();
+            Uninstaller.Register(); // shows up in Settings → Apps → Installed apps, with a working Uninstall
 
             ui.BeginInvoke(new Action(async () => await StartAsync())); // runs once the message loop is up
         }
@@ -146,17 +148,62 @@ namespace frmweatherwid
             _ = LoadWallpapersAsync();
             _ = LoadQuotesAsync();
 
-            if (UpdateService.CanSelfUpdate)
+            if (updatedFrom is not null)
+            {
+                // Just restarted by the auto-updater: show what changed, and tell the previous process (waiting in
+                // Program.StartUpdatedAndWatch) that we came up fine — only then is the old exe removed.
+                ShowWhatsNew(Version.TryParse(updatedFrom, out var from) ? from : null);
+                _ = ReportUpdateHealthyAsync();
+            }
+            else if (UpdateService.CanSelfUpdate)
             {
                 _ = UpdateService.CleanupAsync();
-                updateTimer.Start();
             }
-            // Just restarted by the auto-updater → show what changed since the old version.
-            if (updatedFrom is not null)
-                ShowWhatsNew(Version.TryParse(updatedFrom, out var from) ? from : null);
-            if (openSettingsOnStart) ShowSettings(); // "WeatherWidget.exe --settings"
+            if (UpdateService.CanSelfUpdate) updateTimer.Start();
+
+            if (options.UpdateFailed is { } bad)
+                Notify(L.T($"Bản {bad} không khởi động được trên máy này nên đã quay lại bản cũ. Sẽ đợi bản sửa lỗi.",
+                           $"{bad} failed to start on this PC, so the previous version was restored. Waiting for a fixed release."),
+                       ToolTipIcon.Warning);
+            if (options.OpenSettings) ShowSettings(); // "WeatherWidget.exe --settings"
+            if (options.OpenAbout) ShowAbout();       // "WeatherWidget.exe --about"
+#if DEBUG
+            if (options.TestApplyFile is { } testFile) TestApplyUpdate(testFile);
+#endif
             await weatherTask;
         }
+
+        /// <summary>
+        /// After ~20 s of running normally, signal the previous process (it's waiting to roll back if we die),
+        /// then remove the old exe once it has gone.
+        /// </summary>
+        private static async Task ReportUpdateHealthyAsync()
+        {
+            await Task.Delay(TimeSpan.FromSeconds(20));
+            try
+            {
+                using var ok = EventWaitHandle.OpenExisting(Program.UpdateOkEvent);
+                ok.Set();
+            }
+            catch (WaitHandleCannotBeOpenedException)
+            {
+                // previous process already gave up / isn't waiting
+            }
+            AppLog.Info("Update confirmed healthy");
+            await Task.Delay(TimeSpan.FromSeconds(5));
+            await UpdateService.CleanupAsync();
+        }
+
+#if DEBUG
+        /// <summary>Debug builds only: "--test-apply &lt;exe&gt;" installs that file as if it were a downloaded update (rollback testing).</summary>
+        private void TestApplyUpdate(string file)
+        {
+            var target = Environment.ProcessPath + ".new";
+            File.Copy(file, target, overwrite: true);
+            pendingUpdate = (target, new UpdateInfo(new Version(9, 9, 9), "v9.9.9-test", "", 0, null));
+            TryApplyPendingUpdate(force: true);
+        }
+#endif
 
         private static HttpClient CreateHttpClient()
         {
@@ -167,8 +214,8 @@ namespace frmweatherwid
                 AutomaticDecompression   = DecompressionMethods.All,
             };
             var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(60) };
-            // MET Norway rejects requests without an identifying User-Agent.
-            client.DefaultRequestHeaders.UserAgent.ParseAdd($"WeatherWidget/{Application.ProductVersion}");
+            // MET Norway and Nominatim require an identifying User-Agent with a way to contact the author.
+            client.DefaultRequestHeaders.UserAgent.ParseAdd($"WeatherWidget/{Application.ProductVersion} (+{RepoUrl})");
             return client;
         }
 
@@ -198,7 +245,7 @@ namespace frmweatherwid
                 tray.ContextMenuStrip?.Dispose();
                 tray.Dispose();
 
-                foreach (var b in wallpapers) b.Dispose();
+                foreach (var w in wallpapers) w.Image.Dispose();
                 foreach (var b in iconCache.Values) b.Dispose();
                 WeatherIcon.Dispose();
                 ui.Dispose();
@@ -357,7 +404,7 @@ namespace frmweatherwid
                 }
 
                 var loc         = Location;
-                var weatherTask = weatherService.GetCurrentAsync(loc.Latitude, loc.Longitude);
+                var weatherTask = weatherService.GetCurrentAsync(loc.Latitude, loc.Longitude, loc.TimeZone);
                 var aqiTask     = weatherService.GetUsAqiAsync(loc.Latitude, loc.Longitude);
                 var data        = await weatherTask;
                 var aqi         = await aqiTask;
@@ -368,10 +415,9 @@ namespace frmweatherwid
                 {
                     Weather     = data;
                     LastUpdated = DateTime.Now;
-                    var old = WeatherIcon;
-                    WeatherIcon = Visuals.CreateWeatherIcon(data.Kind, new Size(120, 120), data.IsDay);
-                    old.Dispose();
+                    SetWeatherIcon(data);
                     CheckAlerts(data);
+                    SaveWeatherCache();
                 }
             }
             catch (Exception ex)
@@ -399,6 +445,57 @@ namespace frmweatherwid
             }
         }
 
+        private void SetWeatherIcon(WeatherData data)
+        {
+            var old = WeatherIcon;
+            WeatherIcon = Visuals.CreateWeatherIcon(data.Kind, new Size(120, 120), data.IsDay);
+            old.Dispose();
+        }
+
+        // ------------------------------------------------------------------ last-weather cache
+
+        private sealed record WeatherCache(double Latitude, double Longitude, DateTime SavedUtc, WeatherData Weather, int? Aqi);
+
+        private static string CacheFile => Path.Combine(Path.GetDirectoryName(AppLog.Dir)!, "last-weather.json");
+        private static readonly TimeSpan CacheMaxAge = TimeSpan.FromHours(24);
+
+        private void SaveWeatherCache()
+        {
+            if (Weather is not { } w) return;
+            var cache = new WeatherCache(Location.Latitude, Location.Longitude, DateTime.UtcNow, w, UsAqi);
+            _ = Task.Run(() =>
+            {
+                try
+                {
+                    Directory.CreateDirectory(Path.GetDirectoryName(CacheFile)!);
+                    File.WriteAllText(CacheFile, JsonSerializer.Serialize(cache));
+                }
+                catch (Exception ex) { AppLog.Warn("Couldn't save weather cache", ex); }
+            });
+        }
+
+        /// <summary>Same place (≤ 2 km) and less than a day old → show it right away, labelled with its time.</summary>
+        private void LoadWeatherCache()
+        {
+            try
+            {
+                if (!File.Exists(CacheFile)) return;
+                var c = JsonSerializer.Deserialize<WeatherCache>(File.ReadAllText(CacheFile));
+                if (c is null || DateTime.UtcNow - c.SavedUtc > CacheMaxAge) return;
+                var place = new GeoLocation(c.Latitude, c.Longitude, "", LocationSource.Cached);
+                if (place.DistanceKm(Location) > 2) return;
+
+                Weather     = c.Weather;
+                UsAqi       = c.Aqi;
+                LastUpdated = c.SavedUtc.ToLocalTime();
+                SetWeatherIcon(c.Weather);
+            }
+            catch (Exception ex)
+            {
+                AppLog.Warn("Couldn't read weather cache", ex);
+            }
+        }
+
         private void ApplyLocation(GeoLocation found)
         {
             // Moved somewhere else → old readings belong to the old place, don't show them under the new name.
@@ -421,10 +518,13 @@ namespace frmweatherwid
                 if (IsUpdating)
                     return (IsLocating ? L.T("Đang định vị", "Locating") : L.T("Đang tải", "Loading")) + new string('.', LoadingDots % 4);
                 if (LastFetchFailed)
-                    return LastUpdated is { } t ? L.T($"Mất mạng · lần cuối {t:HH:mm}", $"Offline · last {t:HH:mm}")
+                    return LastUpdated is { } t ? L.T($"Mất mạng · lần cuối {When(t)}", $"Offline · last {When(t)}")
                                                 : L.T("Mất mạng · đang thử lại…", "Offline · retrying...");
-                return LastUpdated is { } u ? L.T($"Cập nhật {u:HH:mm} · {Weather!.Source}", $"Updated {u:HH:mm} · {Weather!.Source}")
+                return LastUpdated is { } u ? L.T($"Cập nhật {When(u)} · {Weather!.Source}", $"Updated {When(u)} · {Weather!.Source}")
                                             : L.T("Cập nhật --:--", "Updated --:--");
+
+                // "14:05" today, "12/11 14:05" for an older (cached) reading
+                static string When(DateTime t) => t.Date == DateTime.Today ? $"{t:HH:mm}" : $"{t:dd/MM HH:mm}";
             }
         }
 
@@ -433,28 +533,22 @@ namespace frmweatherwid
         /// <summary>"Rain in ~20 min" and "air is unhealthy" — each warned once per event.</summary>
         private void CheckAlerts(WeatherData data)
         {
-            if (AppSettings.RainAlert && !data.RainingNow && data.RainStartsAt is { } start)
+            if (AppSettings.RainAlert && AlertRules.RainAlert(data, lastRainAlertFor) is { } minutes && data.RainStartsAt is { } start)
             {
-                var minutes = (int)Math.Round((start - data.LocalNow).TotalMinutes);
-                bool newEvent = lastRainAlertFor is not { } prev || start > prev.AddHours(2);
-                if (minutes <= RainAlertMinutes && newEvent)
-                {
-                    lastRainAlertFor = start;
-                    Notify(minutes <= 5
-                        ? L.T($"🌧 Sắp mưa tại {Location.Name} — mang ô nhé!", $"🌧 Rain is about to start in {Location.Name} — grab an umbrella!")
-                        : L.T($"🌧 Khoảng {minutes} phút nữa có mưa tại {Location.Name} (≈ {start:HH:mm}).",
-                              $"🌧 Rain expected in about {minutes} min in {Location.Name} (≈ {start:HH:mm})."),
-                        ToolTipIcon.Info);
-                    AppLog.Info($"Rain alert: {minutes} min");
-                }
+                lastRainAlertFor = start;
+                Notify(minutes <= 5
+                    ? L.T($"🌧 Sắp mưa tại {Location.Name} — mang ô nhé!", $"🌧 Rain is about to start in {Location.Name} — grab an umbrella!")
+                    : L.T($"🌧 Khoảng {minutes} phút nữa có mưa tại {Location.Name} (≈ {start:HH:mm}).",
+                          $"🌧 Rain expected in about {minutes} min in {Location.Name} (≈ {start:HH:mm})."),
+                    ToolTipIcon.Info);
+                AppLog.Info($"Rain alert: {minutes} min");
             }
 
             if (UsAqi is { } aqi)
             {
-                if (aqi < AqiAlertReset) aqiAlerted = false;
-                if (AppSettings.AqiAlert && aqi >= AqiAlertLevel && !aqiAlerted)
+                (bool alert, aqiAlerted) = AlertRules.AqiAlert(aqi, aqiAlerted);
+                if (alert && AppSettings.AqiAlert)
                 {
-                    aqiAlerted = true;
                     Notify(L.T($"😷 Không khí {Visuals.ClassifyAqi(aqi).Label.ToLower()} (AQI {aqi}) — nên đeo khẩu trang, hạn chế ra ngoài.",
                                $"😷 Air quality is {Visuals.ClassifyAqi(aqi).Label.ToLower()} (AQI {aqi}) — consider a mask and staying indoors."),
                            ToolTipIcon.Warning);
@@ -478,7 +572,7 @@ namespace frmweatherwid
 
         public async Task UseCityAsync(SavedCity city)
         {
-            locationService.ManualLocation = new GeoLocation(city.Latitude, city.Longitude, city.Name, LocationSource.Manual);
+            locationService.ManualLocation = new GeoLocation(city.Latitude, city.Longitude, city.Name, LocationSource.Manual) { TimeZone = city.TimeZone };
             AppSettings.RememberCity(city);
             await UpdateWeatherAsync(relocate: true);
         }
@@ -504,7 +598,7 @@ namespace frmweatherwid
             {
                 dialogOpen = false;
             }
-            if (c is not null) await UseCityAsync(new SavedCity(c.Latitude, c.Longitude, c.Name));
+            if (c is not null) await UseCityAsync(new SavedCity(c.Latitude, c.Longitude, c.Name, c.TimeZone));
             TryApplyPendingUpdate();
         }
 
@@ -587,7 +681,7 @@ namespace frmweatherwid
             isCheckingUpdate = true;
             try
             {
-                var info = await updateService.CheckAsync();
+                var info = await updateService.CheckAsync(skipTag: manual ? null : AppSettings.SkipUpdateTag);
                 if (info is null)
                 {
                     if (manual) Notify(L.T($"Đang dùng bản mới nhất (v{UpdateService.CurrentVersion.ToString(3)}).",
@@ -625,7 +719,7 @@ namespace frmweatherwid
                 var exe = UpdateService.Apply(p.File);
                 pendingUpdate = null;
                 AppLog.Info($"Installed {p.Info.Tag}, restarting");
-                Program.RestartAfterExit = (exe, Program.UpdatedArgs(UpdateService.CurrentVersion));
+                Program.RestartAfterExit = (exe, Program.UpdatedArgs(UpdateService.CurrentVersion), p.Info.Tag);
                 Application.Exit();
             }
             catch (Exception ex)
@@ -649,6 +743,20 @@ namespace frmweatherwid
             whatsNew = new WhatsNewForm(updatedFrom);
             whatsNew.FormClosed += (_, _) => { whatsNew = null; TryApplyPendingUpdate(); };
             whatsNew.Show();
+        }
+
+        private AboutForm? aboutForm;
+
+        public void ShowAbout()
+        {
+            if (aboutForm is { IsDisposed: false })
+            {
+                aboutForm.Activate();
+                return;
+            }
+            aboutForm = new AboutForm();
+            aboutForm.FormClosed += (_, _) => aboutForm = null;
+            aboutForm.Show();
         }
 
         public void ShowSettings()
@@ -693,6 +801,7 @@ namespace frmweatherwid
             mnuLanguage.DropDownItems.AddRange([mnuVi, mnuEn]);
 
             var mnuSettings = new ToolStripMenuItem("", null, (_, _) => ShowSettings());
+            var mnuInfo     = new ToolStripMenuItem("", null, (_, _) => ShowAbout());
             var mnuAbout    = new ToolStripMenuItem($"Weather Widget v{UpdateService.CurrentVersion.ToString(3)}") { Enabled = false };
             var mnuWhatsNew = new ToolStripMenuItem("", null, (_, _) => ShowWhatsNew(null));
             var mnuUpdate   = new ToolStripMenuItem("", null, async (_, _) => await CheckForUpdateAsync(manual: true));
@@ -701,7 +810,7 @@ namespace frmweatherwid
             var mnuExit     = new ToolStripMenuItem("", null, (_, _) => Application.Exit());
 
             menu.Items.AddRange([mnuToggle, mnuRefresh, mnuLocation, mnuLanguage, mnuSettings, new ToolStripSeparator(),
-                                 mnuAbout, mnuWhatsNew, mnuUpdate, mnuBug, mnuDonate, new ToolStripSeparator(), mnuExit]);
+                                 mnuAbout, mnuInfo, mnuWhatsNew, mnuUpdate, mnuBug, mnuDonate, new ToolStripSeparator(), mnuExit]);
 
             // All texts (and the city list) are rebuilt right before the menu shows → language/city changes need nothing else.
             menu.Opening += (_, _) =>
@@ -717,6 +826,7 @@ namespace frmweatherwid
                 mnuVi.Checked    = L.IsVi;
                 mnuEn.Checked    = !L.IsVi;
                 mnuSettings.Text = L.T("⚙ Cài đặt…", "⚙ Settings…");
+                mnuInfo.Text     = L.T("ℹ Giới thiệu và nguồn dữ liệu", "ℹ About and data sources");
                 mnuWhatsNew.Text = L.T("📝 Có gì mới", "📝 What's new");
                 mnuUpdate.Text   = pendingUpdate is { } p ? L.T($"⬆ Cài bản {p.Info.Tag} ngay", $"⬆ Install {p.Info.Tag} now")
                                                           : L.T("⬆ Kiểm tra cập nhật", "⬆ Check for updates");
@@ -827,17 +937,25 @@ namespace frmweatherwid
             try
             {
                 var target = new Size(WidgetForm.FormWidth, WidgetForm.ExpandedHeight); // covers the forecast area too
-                List<Bitmap> bitmaps = [];
+                List<(Bitmap Image, string Credit)> images = [];
 
                 if (source.Item1 == WallpaperMode.Online)
                 {
                     string cacheDir = Path.Combine(Path.GetTempPath(), AppName);
                     Directory.CreateDirectory(cacheDir);
                     PruneCache(cacheDir, TimeSpan.FromDays(14));
-                    var sources = await Task.WhenAll(FetchBingUrlsAsync(), FetchWallhavenUrlsAsync());
-                    var loaded  = await Task.WhenAll(sources.SelectMany(s => s)
-                        .Select(e => LoadScaledImageAsync(e.Url, Path.Combine(cacheDir, e.FileName), target)));
-                    bitmaps = loaded.OfType<Bitmap>().ToList();
+
+                    // Bing (photos Microsoft publishes as wallpapers) + Unsplash photos via Lorem Picsum;
+                    // if Picsum is down, Wikimedia Commons' freely-licensed pictures of the day instead.
+                    var bing   = FetchBingAsync();
+                    var picsum = FetchPicsumAsync();
+                    var entries = (await bing).Concat(await picsum).ToList();
+                    if (entries.Count(e => e.FileName.StartsWith("picsum_")) == 0)
+                        entries.AddRange(await FetchWikimediaAsync());
+
+                    var loaded = await Task.WhenAll(entries.Select(async e =>
+                        (Image: await LoadScaledImageAsync(e.Url, Path.Combine(cacheDir, e.FileName), target), e.Credit)));
+                    images = loaded.Where(x => x.Image is not null).Select(x => (x.Image!, x.Credit)).ToList();
                 }
                 else if (source.Item1 == WallpaperMode.Folder && Directory.Exists(source.Item2))
                 {
@@ -846,24 +964,25 @@ namespace frmweatherwid
                         .Take(50).ToList();
                     var loaded = await Task.WhenAll(files.Select(f => Task.Run(() =>
                     {
-                        try { return DecodeCover(File.ReadAllBytes(f), target); } catch { return null; }
+                        try { return (Image: DecodeCover(File.ReadAllBytes(f), target), Credit: Path.GetFileName(f)); }
+                        catch { return (Image: (Bitmap?)null, Credit: ""); }
                     })));
-                    bitmaps = loaded.OfType<Bitmap>().ToList();
+                    images = loaded.Where(x => x.Image is not null).Select(x => (x.Image!, x.Credit)).ToList();
                 }
 
                 if (loadedWallpaperSource != source) // settings changed again while loading
                 {
-                    bitmaps.ForEach(b => b.Dispose());
+                    images.ForEach(x => x.Image.Dispose());
                     return;
                 }
 
-                Random.Shared.Shuffle(CollectionsMarshal.AsSpan(bitmaps));
+                Random.Shared.Shuffle(CollectionsMarshal.AsSpan(images));
                 var old = wallpapers.ToList();
                 wallpapers.Clear();
-                wallpapers.AddRange(bitmaps);
+                wallpapers.AddRange(images);
                 wallpaperIndex = 0;
                 WallpaperChanged?.Invoke(); // widgets swap BackgroundImage before the old bitmaps go away
-                old.ForEach(b => b.Dispose());
+                old.ForEach(x => x.Image.Dispose());
 
                 if (wallpapers.Count > 1) wallpaperTimer.Start();
                 else wallpaperTimer.Stop();
@@ -953,8 +1072,10 @@ namespace frmweatherwid
             return name;
         }
 
-        /// <summary>Bing daily wallpapers at 1024x768 (≈70 KB each instead of full HD).</summary>
-        private static async Task<List<(string Url, string FileName)>> FetchBingUrlsAsync()
+        private record struct WallpaperEntry(string Url, string FileName, string Credit);
+
+        /// <summary>Bing daily wallpapers at 1024x768 (≈70 KB each instead of full HD); credit from Bing's copyright line.</summary>
+        private static async Task<List<WallpaperEntry>> FetchBingAsync()
         {
             try
             {
@@ -963,13 +1084,14 @@ namespace frmweatherwid
                     "https://www.bing.com/HPImageArchive.aspx?format=js&idx=0&n=8&mkt=en-US", cts.Token);
                 using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cts.Token);
 
-                var list = new List<(string, string)>();
+                var list = new List<WallpaperEntry>();
                 foreach (var el in doc.RootElement.GetProperty("images").EnumerateArray())
                 {
                     var urlBase = el.GetProperty("urlbase").GetString();          // /th?id=OHR.Name_EN-US123
                     if (string.IsNullOrEmpty(urlBase)) continue;
                     var id = urlBase[(urlBase.IndexOf("id=", StringComparison.Ordinal) + 3)..];
-                    list.Add(($"https://www.bing.com{urlBase}_1024x768.jpg", SafeFileName($"bing_{id}_1024x768.jpg")));
+                    var credit = el.TryGetProperty("copyright", out var c) ? c.GetString() ?? "" : "";
+                    list.Add(new($"https://www.bing.com{urlBase}_1024x768.jpg", SafeFileName($"bing_{id}_1024x768.jpg"), $"{credit} — Bing"));
                 }
                 return list;
             }
@@ -980,32 +1102,62 @@ namespace frmweatherwid
             }
         }
 
-        /// <summary>Random SFW general wallpapers from Wallhaven (exactly 1920x1080 to cap download size).</summary>
-        private static async Task<List<(string Url, string FileName)>> FetchWallhavenUrlsAsync()
+        /// <summary>8 random Unsplash photos (Unsplash License — free to use) via Lorem Picsum, no API key.</summary>
+        private static async Task<List<WallpaperEntry>> FetchPicsumAsync()
         {
             try
             {
                 using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-                await using var stream = await Http.GetStreamAsync(
-                    "https://wallhaven.cc/api/v1/search?categories=100&purity=100&sorting=random&resolutions=1920x1080", cts.Token);
+                int page = Random.Shared.Next(1, 30);
+                await using var stream = await Http.GetStreamAsync($"https://picsum.photos/v2/list?page={page}&limit=40", cts.Token);
                 using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cts.Token);
 
-                var list = new List<(string, string)>();
-                foreach (var el in doc.RootElement.GetProperty("data").EnumerateArray().Take(8))
-                {
-                    var url = el.GetProperty("path").GetString();
-                    var id  = el.GetProperty("id").GetString();
-                    if (string.IsNullOrEmpty(url) || string.IsNullOrEmpty(id)) continue;
-                    var ext = Path.GetExtension(url);
-                    list.Add((url, SafeFileName($"wh_{id}{(ext.Length > 0 ? ext : ".jpg")}")));
-                }
-                return list;
+                var all = doc.RootElement.EnumerateArray()
+                    .Select(el => (Id: el.GetProperty("id").GetString() ?? "", Author: el.GetProperty("author").GetString() ?? ""))
+                    .Where(x => x.Id.Length > 0).ToArray();
+                Random.Shared.Shuffle(all);
+                return all.Take(8)
+                          .Select(x => new WallpaperEntry($"https://picsum.photos/id/{x.Id}/600/789.jpg",
+                                                          SafeFileName($"picsum_{x.Id}_600x789.jpg"), $"© {x.Author} — Unsplash"))
+                          .ToList();
             }
             catch (Exception ex)
             {
-                AppLog.Warn("Wallhaven wallpapers failed", ex);
+                AppLog.Warn("Picsum wallpapers failed", ex);
                 return [];
             }
+        }
+
+        /// <summary>Wikimedia Commons "picture of the day" of the last days (free licences), landscape ones only.</summary>
+        private static async Task<List<WallpaperEntry>> FetchWikimediaAsync()
+        {
+            async Task<WallpaperEntry?> Day(DateTime d)
+            {
+                try
+                {
+                    using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                    await using var stream = await Http.GetStreamAsync($"https://api.wikimedia.org/feed/v1/wikipedia/en/featured/{d:yyyy/MM/dd}", cts.Token);
+                    using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cts.Token);
+                    if (!doc.RootElement.TryGetProperty("image", out var img) || !img.TryGetProperty("thumbnail", out var th)) return null;
+                    int w = th.GetProperty("width").GetInt32(), h = th.GetProperty("height").GetInt32();
+                    if (w < h * 1.2) return null; // scans, portraits, documents → not wallpaper material
+                    var url = th.GetProperty("source").GetString();
+                    if (string.IsNullOrEmpty(url)) return null;
+                    var artist  = img.TryGetProperty("artist", out var a) && a.TryGetProperty("text", out var at) ? at.GetString() : null;
+                    var license = img.TryGetProperty("license", out var l) && l.TryGetProperty("type", out var lt) ? lt.GetString() : null;
+                    return new WallpaperEntry(url, SafeFileName($"wm_{d:yyyyMMdd}.jpg"),
+                        $"{(string.IsNullOrWhiteSpace(artist) ? "Wikimedia Commons" : $"© {artist.Trim()}")} — Wikimedia Commons{(license is null ? "" : $" ({license})")}");
+                }
+                catch
+                {
+                    return null;
+                }
+            }
+
+            var days = await Task.WhenAll(Enumerable.Range(1, 14).Select(i => Day(DateTime.UtcNow.Date.AddDays(-i))));
+            var list = days.OfType<WallpaperEntry>().Take(8).ToList();
+            if (list.Count == 0) AppLog.Warn("Wikimedia wallpapers failed");
+            return list;
         }
 
         // ================================================================== quotes

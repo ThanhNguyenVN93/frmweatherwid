@@ -7,6 +7,10 @@ namespace frmweatherwid
     /// <summary>
     /// One on-screen widget. It only draws what <see cref="AppController"/> holds, so there can be one per monitor.
     /// Drag anywhere — the position is remembered per monitor.
+    ///
+    /// DPI: the app is PerMonitorV2. All layout below is in logical 96-DPI units; <see cref="scale"/> (monitor DPI / 96)
+    /// is applied to control bounds, to the Graphics transform when painting, and to icon bitmap sizes — so text and
+    /// icons are rendered at the monitor's real resolution instead of being stretched (blurry) by Windows.
     /// </summary>
     internal sealed class WidgetForm : Form
     {
@@ -18,19 +22,20 @@ namespace frmweatherwid
         public const int ExpandedHeight = DayTop + DayHeight + 8;            // 526
         private const int ScrimAlpha = 110;                                 // dark layer over the wallpaper (see OnPaint)
         private const int HourSlots  = 8;
+        private const int IconSize   = 120;
 
-        private static readonly Font FontTemp     = new("Segoe UI", 24f,  FontStyle.Bold);
-        private static readonly Font FontStats    = new("Segoe UI", 10f,  FontStyle.Bold);
-        private static readonly Font FontAqi      = new("Segoe UI", 9.5f, FontStyle.Bold);
-        private static readonly Font FontStatus   = new("Segoe UI", 9f,   FontStyle.Bold | FontStyle.Italic);
-        private static readonly Font FontQuote    = new("Segoe UI", 7.5f, FontStyle.Italic);
-        private static readonly Font FontAuthor   = new("Segoe UI", 7f,   FontStyle.Bold);
-        private static readonly Font FontSmall    = new("Segoe UI", 9f,   FontStyle.Bold);
-        private static readonly Font FontHint     = new("Segoe UI", 8f,   FontStyle.Bold);
-        private static readonly Font FontDay      = new("Segoe UI", 8.5f, FontStyle.Bold);
-        private static readonly Font FontDayTemp  = new("Segoe UI", 9.5f, FontStyle.Bold);
-        private static readonly Font FontDaySmall = new("Segoe UI", 7.5f, FontStyle.Regular);
-        private static readonly Font FontLunar    = new("Segoe UI", 8.25f, FontStyle.Regular);
+        // Fonts for painting are in logical pixels; the Graphics transform scales them (pt × 96/72 = px at 96 DPI).
+        private static Font Px(float pt, FontStyle style = FontStyle.Regular) => new("Segoe UI", pt * 96f / 72f, style, GraphicsUnit.Pixel);
+        private static readonly Font FontTemp     = Px(24f,  FontStyle.Bold);
+        private static readonly Font FontStats    = Px(10f,  FontStyle.Bold);
+        private static readonly Font FontAqi      = Px(9.5f, FontStyle.Bold);
+        private static readonly Font FontStatus   = Px(9f,   FontStyle.Bold | FontStyle.Italic);
+        private static readonly Font FontQuote    = Px(7.5f, FontStyle.Italic);
+        private static readonly Font FontAuthor   = Px(7f,   FontStyle.Bold);
+        private static readonly Font FontDay      = Px(8.5f, FontStyle.Bold);
+        private static readonly Font FontDayTemp  = Px(9.5f, FontStyle.Bold);
+        private static readonly Font FontDaySmall = Px(7.5f);
+        private static readonly Font FontLunar    = Px(8.25f);
         private static readonly StringFormat QuoteFormat = new() { Trimming = StringTrimming.EllipsisWord };
 
         private readonly AppController app;
@@ -38,16 +43,22 @@ namespace frmweatherwid
         public string PositionKey { get; }
         private readonly bool clampToScreen;     // "one widget per monitor" mode keeps each on its own screen
 
-        private readonly PictureBox pictureWeather;
-        private readonly Panel pnlCity, pnlTemperature, pnlStats, pnlAqi, pnlStatus, pnlQuote, pnlDate, pnlSun, pnlHourly, pnlDaily;
+        private readonly Panel pnlIcon, pnlCity, pnlTemperature, pnlStats, pnlAqi, pnlStatus, pnlQuote, pnlDate, pnlSun, pnlHourly, pnlDaily;
+        private readonly Dictionary<Panel, Rectangle> logicalBounds = [];
         private readonly CheckBox chkStartup;
         private readonly Label lblHint, lblForecastToggle;
         private bool syncingCheckbox;
 
+        private float scale = 1f;
+        private Font? controlFontSmall, controlFontHint; // real controls need fonts already sized for the monitor
+        private Bitmap? placeholder;
+
         private Font? cityFont;
         private Color cityColor  = Color.FromArgb(77, 184, 255);
         private Color cityShadow = Color.FromArgb(170, 0, 0, 0);
+        private Bitmap? wallpaper;               // owned by the controller's pool — never dispose here
 
+        private readonly ToolTip creditTip = new() { InitialDelay = 800, AutoPopDelay = 8000 };
         private bool forecastOpen;
         private int? topBeforeExpand;            // where we were before opening pushed the widget up
         private bool allowClose;
@@ -63,23 +74,15 @@ namespace frmweatherwid
             this.clampToScreen = clampToScreen;
 
             SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint, true);
-            FormBorderStyle       = FormBorderStyle.None;
-            ClientSize            = new Size(FormWidth, BaseHeight);
-            ShowInTaskbar         = false; // lives in the tray
-            BackColor             = Color.FromArgb(20, 20, 20);
-            StartPosition         = FormStartPosition.Manual;
-            BackgroundImageLayout = ImageLayout.None; // wallpapers are pre-scaled to FormWidth x ExpandedHeight
-            KeyPreview            = true;
-            Text                  = "Weather Widget";
+            AutoScaleMode   = AutoScaleMode.None; // we scale ourselves (see class comment)
+            FormBorderStyle = FormBorderStyle.None;
+            ShowInTaskbar   = false;              // lives in the tray
+            BackColor       = Color.FromArgb(20, 20, 20);
+            StartPosition   = FormStartPosition.Manual;
+            KeyPreview      = true;
+            Text            = "Weather Widget";
 
-            pictureWeather = new PictureBox
-            {
-                SizeMode  = PictureBoxSizeMode.Zoom,
-                Size      = new Size(120, 120),
-                Location  = new Point(12, 12),
-                BackColor = Color.Transparent,
-            };
-
+            pnlIcon        = CreatePill(new Rectangle(12, 12, IconSize, IconSize), alpha: 0, radius: 10, PaintIcon);
             pnlCity        = CreatePill(new Rectangle(188, 8, 208, 62),   alpha: 0,   radius: 10, PaintCity);
             pnlQuote       = CreatePill(new Rectangle(8, 138, 178, 58),   alpha: 140, radius: 10, PaintQuote);
             pnlDate        = CreatePill(new Rectangle(8, 200, 178, 34),   alpha: 140, radius: 10, PaintDate);
@@ -95,34 +98,28 @@ namespace frmweatherwid
             chkStartup = new CheckBox
             {
                 AutoSize  = true,
-                Font      = FontSmall,
                 ForeColor = Color.LightSeaGreen,
                 BackColor = Color.FromArgb(160, 0, 0, 0),
-                Padding   = new Padding(6, 3, 6, 3),
             };
             chkStartup.CheckedChanged += (_, _) => { if (!syncingCheckbox) app.StartupEnabled = chkStartup.Checked; };
 
             lblHint = new Label
             {
                 AutoSize  = true,
-                Font      = FontHint,
                 ForeColor = Color.White,
                 BackColor = Color.FromArgb(100, 0, 0, 0),
-                Padding   = new Padding(6, 4, 6, 4),
             };
 
             lblForecastToggle = new Label
             {
                 AutoSize  = true,
-                Font      = FontHint,
                 ForeColor = Color.White,
                 BackColor = Color.FromArgb(170, 25, 100, 190),
-                Padding   = new Padding(6, 4, 6, 4),
                 Cursor    = Cursors.Hand,
             };
             lblForecastToggle.Click += (_, _) => { if (!dragging) ToggleForecast(); };
 
-            Controls.AddRange([pictureWeather, chkStartup, lblHint, lblForecastToggle]);
+            Controls.AddRange([chkStartup, lblHint, lblForecastToggle]);
 
             // Drag on the form and on every child
             foreach (Control c in Controls.Cast<Control>().Append(this))
@@ -144,28 +141,37 @@ namespace frmweatherwid
             app.WallpaperChanged += OnWallpaperChanged;
             app.QuoteChanged     += OnQuoteChanged;
 
+            // Position first (the window's DPI is that of the monitor it's on), then size everything for that DPI.
+            ClientSize = new Size(FormWidth, BaseHeight);
             Location = InitialLocation(screen);
+            CreateHandle();
+            ApplyScale(CurrentScale(DeviceDpi));
+
             OnWallpaperChanged();
             OnQuoteChanged();
             OnDataChanged();
         }
 
-        /// <summary>Transparent owner-drawn panel with a rounded dark background (alpha 0 = no background).</summary>
-        private Panel CreatePill(Rectangle bounds, int alpha, int radius, Action<Graphics, Rectangle> draw)
+        /// <summary>Transparent owner-drawn panel with a rounded dark background (alpha 0 = no background), drawn in logical units.</summary>
+        private Panel CreatePill(Rectangle logical, int alpha, int radius, Action<Graphics, Rectangle> draw)
         {
-            var panel = new BufferedPanel { BackColor = Color.Transparent, Bounds = bounds };
+            var panel = new BufferedPanel { BackColor = Color.Transparent, Bounds = logical };
+            logicalBounds[panel] = logical;
             panel.Paint += (_, e) =>
             {
                 var g = e.Graphics;
                 g.SmoothingMode     = SmoothingMode.AntiAlias;
                 g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
+                g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                g.ScaleTransform(scale, scale);
+                var r = new Rectangle(Point.Empty, logicalBounds[panel].Size);
                 if (alpha > 0)
                 {
                     using var bg   = new SolidBrush(Color.FromArgb(alpha, 0, 0, 0));
-                    using var path = Visuals.RoundedPath(panel.ClientRectangle, radius);
+                    using var path = Visuals.RoundedPath(r, radius);
                     g.FillPath(bg, path);
                 }
-                draw(g, panel.ClientRectangle);
+                draw(g, r);
             };
             Controls.Add(panel);
             return panel;
@@ -175,6 +181,51 @@ namespace frmweatherwid
         {
             public BufferedPanel() => DoubleBuffered = true;
         }
+
+        // ================================================================== DPI
+
+        /// <summary>WEATHERWIDGET_SCALE=1.5 forces a scale (to check the layout on a 100% screen).</summary>
+        private static float CurrentScale(int dpi) =>
+            float.TryParse(Environment.GetEnvironmentVariable("WEATHERWIDGET_SCALE"), NumberStyles.Float, CultureInfo.InvariantCulture, out var forced) && forced > 0
+                ? forced
+                : dpi / 96f;
+
+        private int S(int v) => (int)Math.Round(v * scale);
+        private Rectangle S(Rectangle r) => new(S(r.X), S(r.Y), S(r.Width), S(r.Height));
+
+        /// <summary>Size and place everything for <paramref name="newScale"/>; called at creation and when moved to a monitor with another DPI.</summary>
+        private void ApplyScale(float newScale)
+        {
+            scale = newScale;
+            SuspendLayout();
+
+            ClientSize = new Size(S(FormWidth), S(forecastOpen ? ExpandedHeight : BaseHeight));
+            foreach (var (panel, logical) in logicalBounds) panel.Bounds = S(logical);
+
+            controlFontSmall?.Dispose();
+            controlFontHint?.Dispose();
+            controlFontSmall = new Font("Segoe UI", 9f * 96f / 72f * scale, FontStyle.Bold, GraphicsUnit.Pixel);
+            controlFontHint  = new Font("Segoe UI", 8f * 96f / 72f * scale, FontStyle.Bold, GraphicsUnit.Pixel);
+            chkStartup.Font = controlFontSmall;
+            lblHint.Font = lblForecastToggle.Font = controlFontHint;
+            chkStartup.Padding = new Padding(S(6), S(3), S(6), S(3));
+            lblHint.Padding = lblForecastToggle.Padding = new Padding(S(6), S(4), S(6), S(4));
+
+            placeholder?.Dispose();
+            placeholder = Visuals.CreatePlaceholderIcon(new Size(S(IconSize), S(IconSize)));
+
+            ApplyLanguageToControls();
+            ResumeLayout();
+            Invalidate(true);
+        }
+
+        protected override void OnDpiChanged(DpiChangedEventArgs e)
+        {
+            base.OnDpiChanged(e); // moves/resizes the window to Windows' suggested rectangle
+            ApplyScale(CurrentScale(e.DeviceDpiNew));
+        }
+
+        // ================================================================== show / close
 
         public void ShowWidget()
         {
@@ -211,9 +262,12 @@ namespace frmweatherwid
                 app.StatusChanged    -= OnStatusChanged;
                 app.WallpaperChanged -= OnWallpaperChanged;
                 app.QuoteChanged     -= OnQuoteChanged;
-                BackgroundImage = null; // owned by the controller's pool
-                pictureWeather.Image = null;
+                wallpaper = null;
                 cityFont?.Dispose();
+                controlFontSmall?.Dispose();
+                controlFontHint?.Dispose();
+                placeholder?.Dispose();
+                creditTip.Dispose();
             }
             base.Dispose(disposing);
         }
@@ -229,7 +283,6 @@ namespace frmweatherwid
             chkStartup.Checked = app.StartupEnabled;
             syncingCheckbox    = false;
 
-            pictureWeather.Image = app.WeatherIcon; // owned by the controller
             SetCityFont(app.Location.Name);
             foreach (Control c in Controls) c.Invalidate();
         }
@@ -242,7 +295,10 @@ namespace frmweatherwid
         private void OnWallpaperChanged()
         {
             if (IsDisposed) return;
-            BackgroundImage = app.Wallpaper; // owned by the controller's pool — never dispose here
+            wallpaper = app.Wallpaper;
+            // Photo credit (author / licence) when hovering the widget
+            var credit = app.WallpaperCredit;
+            foreach (Control c in Controls.Cast<Control>().Append(this)) creditTip.SetToolTip(c, credit);
             UpdateCityColor();
             Invalidate(true);
         }
@@ -266,17 +322,18 @@ namespace frmweatherwid
             lblForecastToggle.Size = lblForecastToggle.PreferredSize;
 
             // Bottom row (inside the collapsed area): [checkbox] ...... [▼ Forecast] [Press ESC]
-            chkStartup.Location        = new Point(12, BaseHeight - chkStartup.Height - 8);
-            lblHint.Location           = new Point(FormWidth - lblHint.Width - 8, BaseHeight - lblHint.Height - 8);
-            lblForecastToggle.Location = new Point(lblHint.Left - lblForecastToggle.Width - 6, lblHint.Top);
+            int bottom = S(BaseHeight) - S(8);
+            chkStartup.Location        = new Point(S(12), bottom - chkStartup.Height);
+            lblHint.Location           = new Point(S(FormWidth) - lblHint.Width - S(8), bottom - lblHint.Height);
+            lblForecastToggle.Location = new Point(lblHint.Left - lblForecastToggle.Width - S(6), lblHint.Top);
         }
 
         // ================================================================== position / monitors
 
         private Screen OwnScreen => Screen.AllScreens.FirstOrDefault(s => s.DeviceName == screenName) ?? Screen.PrimaryScreen ?? Screen.AllScreens[0];
 
-        private static Point DefaultLocation(Screen s) =>
-            new(s.WorkingArea.Right - FormWidth, s.WorkingArea.Top + (s.WorkingArea.Height - BaseHeight) / 2);
+        private Point DefaultLocation(Screen s) =>
+            new(s.WorkingArea.Right - S(FormWidth), s.WorkingArea.Top + (s.WorkingArea.Height - S(BaseHeight)) / 2);
 
         private Point InitialLocation(Screen s)
         {
@@ -287,7 +344,7 @@ namespace frmweatherwid
         /// <summary>At least the top 40 px (to grab it) must be on the allowed screen(s).</summary>
         private bool IsVisibleAt(Point p)
         {
-            var grab = new Rectangle(p.X, p.Y, FormWidth, 40);
+            var grab = new Rectangle(p.X, p.Y, S(FormWidth), S(40));
             Rectangle[] areas = clampToScreen ? [OwnScreen.WorkingArea] : [.. Screen.AllScreens.Select(s => s.WorkingArea)];
             return areas.Any(a => Rectangle.Intersect(a, grab) is { Width: >= 80, Height: >= 30 });
         }
@@ -350,7 +407,7 @@ namespace frmweatherwid
 
             if (forecastOpen)
             {
-                Height = ExpandedHeight;
+                Height = S(ExpandedHeight);
                 // Not enough room below → move up so the whole forecast is visible; remember where we were.
                 if (Bottom > area.Bottom)
                 {
@@ -360,7 +417,7 @@ namespace frmweatherwid
             }
             else
             {
-                Height = BaseHeight;
+                Height = S(BaseHeight);
                 if (topBeforeExpand is { } top) Top = top;
                 topBeforeExpand = null;
             }
@@ -370,7 +427,42 @@ namespace frmweatherwid
             Invalidate();
         }
 
-        // ================================================================== painting
+        // ================================================================== painting (logical units — see CreatePill)
+
+        protected override void OnPaintBackground(PaintEventArgs e)
+        {
+            e.Graphics.Clear(BackColor);
+            if (wallpaper is null) return;
+            var dest = new Rectangle(0, 0, S(FormWidth), S(ExpandedHeight));
+            if (dest.Size == wallpaper.Size)
+            {
+                e.Graphics.DrawImageUnscaled(wallpaper, 0, 0);
+            }
+            else
+            {
+                e.Graphics.InterpolationMode = InterpolationMode.HighQualityBilinear;
+                e.Graphics.DrawImage(wallpaper, dest);
+            }
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e);
+            // Dark scrim so text stays readable on any wallpaper
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            using var scrim = new SolidBrush(Color.FromArgb(ScrimAlpha, 0, 0, 0));
+            using var path  = Visuals.RoundedPath(ClientRectangle, S(14));
+            e.Graphics.FillPath(scrim, path);
+        }
+
+        /// <summary>Icons are generated at the monitor's pixel size and drawn at their logical size → 1:1, sharp.</summary>
+        private Bitmap Glyph(WeatherKind kind, bool isDay, int logicalSize) => app.GetIcon(kind, isDay, S(logicalSize));
+
+        private void PaintIcon(Graphics g, Rectangle r)
+        {
+            var img = app.Weather is { } w ? Glyph(w.Kind, w.IsDay, IconSize) : placeholder;
+            if (img is not null) g.DrawImage(img, 0, 0, IconSize, IconSize);
+        }
 
         /// <summary>Largest font (28pt → 12pt) that fits the city name.</summary>
         private void SetCityFont(string name)
@@ -378,8 +470,8 @@ namespace frmweatherwid
             Font font;
             for (float size = 28f; ; size -= 2f)
             {
-                font = new Font("Segoe UI", size, FontStyle.Bold);
-                if (size <= 12f || TextRenderer.MeasureText(name, font).Width <= pnlCity.Width - 8) break;
+                font = Px(size, FontStyle.Bold);
+                if (size <= 12f || TextRenderer.MeasureText(name, font).Width <= logicalBounds[pnlCity].Width - 8) break;
                 font.Dispose();
             }
             cityFont?.Dispose();
@@ -409,7 +501,7 @@ namespace frmweatherwid
         /// </summary>
         private void UpdateCityColor()
         {
-            var bg = AverageBackground(pnlCity.Bounds);
+            var bg = AverageBackground(logicalBounds[pnlCity]); // wallpaper bitmaps are in logical size
             Color brand = Color.FromArgb(77, 184, 255);
             Color best  = brand;
             if (Visuals.Contrast(brand, bg) < 4.5)
@@ -425,7 +517,7 @@ namespace frmweatherwid
         private Color AverageBackground(Rectangle area)
         {
             Color raw = BackColor;
-            if (BackgroundImage is Bitmap bmp)
+            if (wallpaper is { } bmp)
             {
                 var rect = Rectangle.Intersect(area, new Rectangle(Point.Empty, bmp.Size));
                 long r = 0, g = 0, b = 0, n = 0;
@@ -546,7 +638,9 @@ namespace frmweatherwid
         /// <summary>Next 24 h in 3-hour steps: time, icon (day/night), temperature, chance of rain.</summary>
         private void PaintHourly(Graphics g, Rectangle r)
         {
-            var hours = app.Weather?.Hourly ?? [];
+            // Cached data can be hours old — never show hours that have already passed.
+            var now   = app.Weather?.LocalNow ?? DateTime.Now;
+            var hours = (app.Weather?.Hourly ?? []).Where(h => h.Time > now.AddHours(-1)).ToList();
             using var dim = new SolidBrush(Color.FromArgb(200, 255, 255, 255));
             if (hours.Count == 0)
             {
@@ -567,8 +661,7 @@ namespace frmweatherwid
                 string label = i == 0 ? L.T("Bây giờ", "Now") : L.IsVi ? $"{h.Time:HH}h" : h.Time.ToString("h tt", en);
                 g.DrawString(label, FontDaySmall, dim, new RectangleF(x, 3, colW, 14), Visuals.Center);
 
-                var icon = app.GetIcon(h.Kind, h.IsDay, 26);
-                g.DrawImage(icon, x + (colW - icon.Width) / 2f, 18);
+                g.DrawImage(Glyph(h.Kind, h.IsDay, 26), x + (colW - 26) / 2f, 18, 26, 26);
 
                 using (var t = new SolidBrush(Visuals.TemperatureColor(h.TempC)))
                     g.DrawString(Units.Temp(h.TempC), FontDay, t, new RectangleF(x, 45, colW, 16), Visuals.Center);
@@ -580,7 +673,8 @@ namespace frmweatherwid
 
         private void PaintDaily(Graphics g, Rectangle r)
         {
-            var days = app.Weather?.Daily ?? [];
+            var today = DateOnly.FromDateTime(app.Weather?.LocalNow ?? DateTime.Now);
+            var days  = (app.Weather?.Daily ?? []).Where(d => d.Date >= today).ToList(); // cached data may start yesterday
             using var dim = new SolidBrush(Color.FromArgb(200, 255, 255, 255));
             if (days.Count == 0)
             {
@@ -588,7 +682,6 @@ namespace frmweatherwid
                 return;
             }
 
-            var today   = DateOnly.FromDateTime(app.Weather!.LocalNow);
             int count   = Math.Min(days.Count, WeatherService.ForecastDays);
             float colW  = (float)r.Width / count;
             using var sep  = new Pen(Color.FromArgb(50, 255, 255, 255));
@@ -603,8 +696,7 @@ namespace frmweatherwid
                 string dayName = d.Date == today ? L.T("Hôm nay", "Today") : L.Culture.DateTimeFormat.GetAbbreviatedDayName(d.Date.DayOfWeek);
                 g.DrawString(dayName, FontDay, Brushes.White, new RectangleF(x, 4, colW, 18), Visuals.Center);
 
-                var icon = app.GetIcon(d.Kind, true, 34);
-                g.DrawImage(icon, x + (colW - icon.Width) / 2f, 22);
+                g.DrawImage(Glyph(d.Kind, true, 34), x + (colW - 34) / 2f, 22, 34, 34);
 
                 using (var hot = new SolidBrush(Visuals.TemperatureColor(d.MaxC)))
                 {
@@ -628,16 +720,6 @@ namespace frmweatherwid
             float start = x + (colW - textW - dropH * 0.7f - 1) / 2f;
             Visuals.DrawDrop(g, brush, start, y + 3, dropH);
             g.DrawString(pct, FontDaySmall, brush, start + dropH * 0.7f, y);
-        }
-
-        protected override void OnPaint(PaintEventArgs e)
-        {
-            base.OnPaint(e);
-            // Dark scrim so text stays readable on any wallpaper
-            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-            using var scrim = new SolidBrush(Color.FromArgb(ScrimAlpha, 0, 0, 0));
-            using var path  = Visuals.RoundedPath(ClientRectangle, 14);
-            e.Graphics.FillPath(scrim, path);
         }
     }
 }

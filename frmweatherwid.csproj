@@ -8,9 +8,9 @@
     <UseWindowsForms>true</UseWindowsForms>
     <ImplicitUsings>enable</ImplicitUsings>
     <PlatformTarget>x64</PlatformTarget>
-    <!-- Layout is in fixed pixels: let Windows scale the whole window on 125%/150% displays
-         instead of growing only the fonts (which made text overflow its panels). -->
-    <ApplicationHighDpiMode>DpiUnawareGdiScaled</ApplicationHighDpiMode>
+    <!-- Sharp on 125%/150% and mixed-DPI monitors: the widget scales its own layout (WidgetForm.ApplyScale),
+         dialogs scale their bounds once at creation (Visuals.ScaleDialog). -->
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <ApplicationIcon>app.ico</ApplicationIcon>
   </PropertyGroup>
 
@@ -26,11 +26,20 @@
     <Copyright>Copyright © 2026 Nguyen Thanh</Copyright>
     <NeutralLanguage>vi-VN</NeutralLanguage>
     <RepositoryUrl>https://github.com/ThanhNguyenVN93/frmweatherwid</RepositoryUrl>
-    <Version>1.2.2</Version>
-    <FileVersion>1.2.2.0</FileVersion>
-    <!-- keep "1.2.2" instead of "1.2.2+<git hash>" in Product version -->
+    <PackageLicenseExpression>GPL-3.0-or-later</PackageLicenseExpression>
+    <Version>1.2.3</Version>
+    <FileVersion>1.2.3.0</FileVersion>
+    <!-- keep "1.2.3" instead of "1.2.3+<git hash>" in Product version -->
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- The test project lives inside this folder: keep its files out of the app build -->
+    <Compile Remove="tests\**" />
+    <None Remove="tests\**" />
+    <EmbeddedResource Remove="tests\**" />
+    <InternalsVisibleTo Include="WeatherWidget.Tests" />
+  </ItemGroup>
 
   <!-- dotnet publish -c Release -r win-x64 → one self-contained exe (no .NET install needed) -->
   <PropertyGroup Condition="'$(RuntimeIdentifier)' != ''">

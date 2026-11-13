@@ -9,9 +9,11 @@ namespace frmweatherwid
     internal static class AppLog
     {
         private static readonly object Gate = new();
+        private static readonly Mutex CrossProcess = new(false, @"Local\FrmWeatherWidget.Log");
 
-        public static string Dir { get; } = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WeatherWidget", "logs");
+        public static string Dir { get; } = Environment.GetEnvironmentVariable("WEATHERWIDGET_LOG_DIR") is { Length: > 0 } custom
+            ? custom // tests point this at a temp folder so they don't write into the real log
+            : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WeatherWidget", "logs");
 
         private static string TodayFile => Path.Combine(Dir, $"app-{DateTime.Now:yyyyMMdd}.log");
 
@@ -24,17 +26,29 @@ namespace frmweatherwid
 
         private static void Write(string level, string message)
         {
-            try
+            var bytes = Encoding.UTF8.GetBytes($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} [{level}] {message}{Environment.NewLine}");
+            lock (Gate)
             {
-                lock (Gate)
+                // Two processes can log at once (old + new exe during an update). Appending from two handles races
+                // (both seek to the same end → one line overwrites the other), so serialise across processes too.
+                bool owned = false;
+                try
                 {
+                    try { owned = CrossProcess.WaitOne(1000); }
+                    catch (AbandonedMutexException) { owned = true; }
+
                     Directory.CreateDirectory(Dir);
-                    File.AppendAllText(TodayFile, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} [{level}] {message}{Environment.NewLine}", Encoding.UTF8);
+                    using var fs = new FileStream(TodayFile, FileMode.Append, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete);
+                    fs.Write(bytes);
                 }
-            }
-            catch
-            {
-                // logging must never take the app down
+                catch
+                {
+                    // logging must never take the app down
+                }
+                finally
+                {
+                    if (owned) CrossProcess.ReleaseMutex();
+                }
             }
         }
 
@@ -61,7 +75,9 @@ namespace frmweatherwid
                         ? Directory.EnumerateFiles(Dir, "app-*.log").OrderByDescending(File.GetLastWriteTime).FirstOrDefault()
                         : null;
                     if (newest is null) return "";
-                    var all = File.ReadAllLines(newest, Encoding.UTF8);
+                    using var fs = new FileStream(newest, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                    using var reader = new StreamReader(fs, Encoding.UTF8);
+                    var all = reader.ReadToEnd().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
                     return string.Join(Environment.NewLine, all.Skip(Math.Max(0, all.Length - lines)));
                 }
             }

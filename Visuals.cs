@@ -121,6 +121,35 @@ namespace frmweatherwid
             g.FillPath(brush, path);
         }
 
+        /// <summary>
+        /// Dialogs are laid out in 96-DPI pixels. In PerMonitorV2 their (point-sized) fonts already render at the monitor's
+        /// DPI, so scale the bounds to match — once, after the controls are created. AutoSize controls only move;
+        /// children of flow/table layout panels are placed by their panel.
+        /// </summary>
+        public static void ScaleDialog(Form form)
+        {
+            form.AutoScaleMode = AutoScaleMode.None;
+            float k = form.DeviceDpi / 96f;
+            if (Math.Abs(k - 1f) < 0.01f) return;
+
+            int S(int v) => (int)Math.Round(v * k);
+            void Walk(Control.ControlCollection controls, bool parentLaysOut)
+            {
+                foreach (Control c in controls)
+                {
+                    if (!parentLaysOut)
+                    {
+                        if (c.AutoSize) c.Location = new Point(S(c.Left), S(c.Top));
+                        else c.Bounds = new Rectangle(S(c.Left), S(c.Top), S(c.Width), S(c.Height));
+                    }
+                    if (c.MaximumSize.Width > 0) c.MaximumSize = new Size(S(c.MaximumSize.Width), S(c.MaximumSize.Height));
+                    Walk(c.Controls, c is FlowLayoutPanel or TableLayoutPanel);
+                }
+            }
+            Walk(form.Controls, parentLaysOut: false);
+            form.ClientSize = new Size(S(form.ClientSize.Width), S(form.ClientSize.Height));
+        }
+
         public static double Luminance(Color c)
         {
             static double Ch(int v) { double s = v / 255.0; return s <= 0.03928 ? s / 12.92 : Math.Pow((s + 0.055) / 1.055, 2.4); }

@@ -75,6 +75,7 @@ namespace frmweatherwid
             ok.Click += (_, _) => Close();
 
             Controls.AddRange([header, body, ok]);
+            Visuals.ScaleDialog(this);
             AcceptButton = ok;
             CancelButton = ok;
         }

@@ -105,7 +105,7 @@ namespace frmweatherwid
             // ---------------- Wallpaper
             y = Header(L.T("Hình nền", "Wallpaper"), y);
             var wpGroup = new Panel { Bounds = new Rectangle(Pad, y, W - 2 * Pad, 84) };
-            rbOnline = Radio(L.T("Ảnh online (Bing + Wallhaven)", "Online photos (Bing + Wallhaven)"), 0, 0, (_, _) => { if (!syncing && rbOnline.Checked) AppSettings.Wallpaper = WallpaperMode.Online; });
+            rbOnline = Radio(L.T("Ảnh online (Bing + Unsplash)", "Online photos (Bing + Unsplash)"), 0, 0, (_, _) => { if (!syncing && rbOnline.Checked) AppSettings.Wallpaper = WallpaperMode.Online; });
             rbFolder = Radio(L.T("Ảnh trong thư mục:", "Pictures in a folder:"), 0, 28, (_, _) => { if (!syncing && rbFolder.Checked) ChooseFolderIfNeeded(); });
             rbNone   = Radio(L.T("Không dùng (nền tối)", "None (dark background)"), 0, 56, (_, _) => { if (!syncing && rbNone.Checked) AppSettings.Wallpaper = WallpaperMode.None; });
             txtFolder = new TextBox { Bounds = new Rectangle(170, 27, 180, 24), ReadOnly = true, BackColor = Panel2, ForeColor = Color.White, BorderStyle = BorderStyle.FixedSingle };
@@ -158,6 +158,10 @@ namespace frmweatherwid
                 AppController.OpenUrl(AppLog.Dir);
             }));
             Controls.Add(Button(L.T("🐞 Báo lỗi", "🐞 Report bug"), new Rectangle(Pad + 138, y, 120, 30), (_, _) => BugReport.Open()));
+            var uninstall = Button(L.T("🗑 Gỡ cài đặt…", "🗑 Uninstall…"), new Rectangle(Pad + 266, y, W - 2 * Pad - 266, 30), (_, _) => ConfirmUninstall());
+            uninstall.ForeColor = Color.Salmon;
+            Controls.Add(uninstall);
+            y += 38;
             var close = Button(L.T("Đóng", "Close"), new Rectangle(W - Pad - 100, y, 100, 30), (_, _) => Close());
             close.BackColor = Color.FromArgb(25, 100, 190);
             close.ForeColor = Color.White;
@@ -166,6 +170,7 @@ namespace frmweatherwid
             y += 30 + Pad;
 
             ClientSize = new Size(W, y);
+            Visuals.ScaleDialog(this); // sharp on 125%/150% screens (bounds follow the DPI-sized fonts)
             SyncValues();
             ResumeLayout();
         }
@@ -262,6 +267,15 @@ namespace frmweatherwid
             if (key is Keys.ControlKey or Keys.ShiftKey or Keys.Menu or Keys.LWin or Keys.RWin) return; // wait for the real key
             if (!e.Control && !e.Alt) return; // plain letters would steal normal typing
             AppSettings.Hotkey = e.KeyData;
+        }
+
+        private void ConfirmUninstall()
+        {
+            var answer = MessageBox.Show(this,
+                L.T("Gỡ Weather Widget khỏi máy?\n\n• Tắt app và bỏ khỏi khởi động cùng Windows\n• Xoá cài đặt, thành phố đã lưu, log và ảnh nền đã tải\n• Xoá file WeatherWidget.exe\n\nKhông hoàn tác được.",
+                    "Remove Weather Widget from this PC?\n\n• Close it and remove it from Windows startup\n• Delete settings, saved cities, logs and cached wallpapers\n• Delete WeatherWidget.exe\n\nThis can't be undone."),
+                L.T("Gỡ cài đặt", "Uninstall"), MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2);
+            if (answer == DialogResult.Yes) Uninstaller.UninstallNow();
         }
 
         private void ChooseFolderIfNeeded()

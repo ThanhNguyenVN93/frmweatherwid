@@ -9,6 +9,9 @@ namespace frmweatherwid
 
     internal sealed record GeoLocation(double Latitude, double Longitude, string Name, LocationSource Source)
     {
+        /// <summary>IANA time zone of a manually chosen city (null = this PC's zone, right for auto-detected places).</summary>
+        public string? TimeZone { get; init; }
+
         /// <summary>Rough distance in km (equirectangular — plenty for "did we move?").</summary>
         public double DistanceKm(GeoLocation other)
         {
@@ -20,7 +23,7 @@ namespace frmweatherwid
     }
 
     /// <summary>A search hit from the city picker.</summary>
-    internal sealed record CityResult(double Latitude, double Longitude, string Name, string Detail)
+    internal sealed record CityResult(double Latitude, double Longitude, string Name, string Detail, string? TimeZone = null)
     {
         public override string ToString() => string.IsNullOrEmpty(Detail) ? Name : $"{Name} — {Detail}";
     }
@@ -163,7 +166,8 @@ namespace frmweatherwid
                         el.GetProperty("latitude").GetDouble(),
                         el.GetProperty("longitude").GetDouble(),
                         el.GetProperty("name").GetString() ?? "",
-                        string.Join(", ", new[] { Str(el, "admin1"), Str(el, "country") }.Where(s => s.Length > 0))))
+                        string.Join(", ", new[] { Str(el, "admin1"), Str(el, "country") }.Where(s => s.Length > 0)),
+                        Str(el, "timezone") is { Length: > 0 } tz ? tz : null))
                         .ToList();
                     if (list.Count > 0) return list;
                 }
@@ -214,7 +218,10 @@ namespace frmweatherwid
                 if (key?.GetValue(prefix + "Lat") is not string lat ||
                     key.GetValue(prefix + "Lon") is not string lon ||
                     key.GetValue(prefix + "Name") is not string name) return null;
-                return new GeoLocation(double.Parse(lat, Inv), double.Parse(lon, Inv), name, source);
+                return new GeoLocation(double.Parse(lat, Inv), double.Parse(lon, Inv), name, source)
+                {
+                    TimeZone = key.GetValue(prefix + "Tz") as string,
+                };
             }
             catch
             {
@@ -230,6 +237,8 @@ namespace frmweatherwid
                 key.SetValue(prefix + "Lat",  loc.Latitude.ToString("R", Inv));
                 key.SetValue(prefix + "Lon",  loc.Longitude.ToString("R", Inv));
                 key.SetValue(prefix + "Name", loc.Name);
+                if (loc.TimeZone is { Length: > 0 } tz) key.SetValue(prefix + "Tz", tz);
+                else key.DeleteValue(prefix + "Tz", throwOnMissingValue: false);
             }
             catch { }
         }
@@ -239,7 +248,7 @@ namespace frmweatherwid
             try
             {
                 using var key = Registry.CurrentUser.CreateSubKey(SettingsKeyPath);
-                foreach (var suffix in (string[])["Lat", "Lon", "Name"])
+                foreach (var suffix in (string[])["Lat", "Lon", "Name", "Tz"])
                     key.DeleteValue(prefix + suffix, throwOnMissingValue: false);
             }
             catch { }

@@ -30,7 +30,7 @@ namespace frmweatherwid
             !File.Exists(Path.ChangeExtension(p, ".dll"));
 
         /// <summary>Newer release info, or null when already up to date.</summary>
-        public async Task<UpdateInfo?> CheckAsync(CancellationToken ct = default)
+        public async Task<UpdateInfo?> CheckAsync(string? skipTag = null, CancellationToken ct = default)
         {
             using var req = new HttpRequestMessage(HttpMethod.Get, LatestReleaseApi);
             req.Headers.Accept.ParseAdd("application/vnd.github+json");
@@ -49,6 +49,7 @@ namespace frmweatherwid
             var tag     = root.GetProperty("tag_name").GetString() ?? "";
             var version = ParseVersion(tag);
             if (version is null || version <= CurrentVersion) return null;
+            if (!string.IsNullOrEmpty(skipTag) && string.Equals(tag, skipTag, StringComparison.OrdinalIgnoreCase)) return null; // rolled back here before
 
             foreach (var asset in root.GetProperty("assets").EnumerateArray())
             {
@@ -124,6 +125,7 @@ namespace frmweatherwid
         {
             if (ExePath is not { } exe) return;
             TryDelete(exe + ".new");
+            TryDelete(exe + ".bad");
             for (int i = 0; i < 10 && File.Exists(exe + ".old"); i++)
             {
                 TryDelete(exe + ".old");
@@ -131,7 +133,7 @@ namespace frmweatherwid
             }
         }
 
-        private static Version? ParseVersion(string? text)
+        internal static Version? ParseVersion(string? text)
         {
             if (string.IsNullOrWhiteSpace(text)) return null;
             var s = text.Trim().TrimStart('v', 'V');

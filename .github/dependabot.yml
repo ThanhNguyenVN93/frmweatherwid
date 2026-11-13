@@ -1,0 +1,11 @@
+# Weekly PRs that keep the CI actions and the test packages up to date.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: nuget
+    directory: /tests/WeatherWidget.Tests
+    schedule:
+      interval: weekly

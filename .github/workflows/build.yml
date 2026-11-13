@@ -1,8 +1,12 @@
 name: Build & Release
 
-# - push / pull request to main  → build check (catches compile errors)
-# - push a tag vX.Y.Z            → publish the single-file exe and create the GitHub release
+# - push / pull request to main  → tests + build check
+# - push a tag vX.Y.Z            → tests, publish the single-file exe, (sign it), create the GitHub release, (submit to winget)
 #   (installed copies of the widget auto-update from the latest release's WeatherWidget.exe)
+#
+# Optional, switched on by repository settings (see docs/code-signing.md):
+#   - Code signing (SignPath): secret SIGNPATH_API_TOKEN + variables SIGNPATH_ORGANIZATION_ID, SIGNPATH_PROJECT_SLUG
+#   - winget:                  secret WINGET_TOKEN (classic PAT with public_repo)
 on:
   push:
     branches: [main]
@@ -17,6 +21,9 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
+    env:
+      IS_RELEASE: ${{ startsWith(github.ref, 'refs/tags/v') }}
+      SIGNING_ENABLED: ${{ vars.SIGNPATH_ORGANIZATION_ID != '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -25,7 +32,7 @@ jobs:
           dotnet-version: 10.0.x
 
       - name: Check tag matches the project version
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: env.IS_RELEASE == 'true'
         shell: pwsh
         run: |
           $tag = '${{ github.ref_name }}'.TrimStart('v')
@@ -33,19 +40,48 @@ jobs:
           if ($tag -ne $ver) { throw "Tag v$tag doesn't match <Version>$ver</Version> in frmweatherwid.csproj" }
           "Version $ver OK"
 
+      - name: Run tests
+        shell: pwsh
+        run: dotnet test tests/WeatherWidget.Tests/WeatherWidget.Tests.csproj -c Release --logger "console;verbosity=normal"
+
       - name: Publish single-file exe
         shell: pwsh
         run: dotnet publish frmweatherwid.csproj -c Release -r win-x64 -o out
 
       - name: Upload build artifact
+        id: upload
         uses: actions/upload-artifact@v4
         with:
           name: WeatherWidget
           path: out/WeatherWidget.exe
           retention-days: 14
 
+      # ---- Code signing (only once SignPath is set up; releases only) ----
+      - name: Sign with SignPath
+        if: env.IS_RELEASE == 'true' && env.SIGNING_ENABLED == 'true'
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: release-signing
+          artifact-configuration-slug: initial
+          github-artifact-id: ${{ steps.upload.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 3600 # a human approves each release in SignPath
+          output-artifact-directory: signed
+
+      - name: Use the signed exe
+        if: env.IS_RELEASE == 'true' && env.SIGNING_ENABLED == 'true'
+        shell: pwsh
+        run: |
+          Copy-Item signed/WeatherWidget.exe out/WeatherWidget.exe -Force
+          $sig = Get-AuthenticodeSignature out/WeatherWidget.exe
+          if ($sig.Status -ne 'Valid') { throw "Signature is $($sig.Status)" }
+          "Signed by: $($sig.SignerCertificate.Subject)"
+
       - name: Create GitHub release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: env.IS_RELEASE == 'true'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -59,3 +95,16 @@ jobs:
           } else {
             gh release create $tag "out/WeatherWidget.exe#WeatherWidget.exe (Windows x64, self-contained)" --title $tag --notes-file notes.md
           }
+
+      # ---- winget (only once the WINGET_TOKEN secret exists; releases only) ----
+      - name: Submit to winget
+        if: env.IS_RELEASE == 'true'
+        shell: pwsh
+        env:
+          WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+        run: |
+          if (-not $env:WINGET_TOKEN) { "WINGET_TOKEN not set — skipping winget."; exit 0 }
+          $version = '${{ github.ref_name }}'.TrimStart('v')
+          $dir = ./.github/scripts/winget-manifests.ps1 -Version $version -Exe out/WeatherWidget.exe -Out winget-out
+          Invoke-WebRequest https://aka.ms/wingetcreate/latest -OutFile wingetcreate.exe
+          ./wingetcreate.exe submit $dir --token $env:WINGET_TOKEN

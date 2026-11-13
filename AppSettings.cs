@@ -7,7 +7,7 @@ namespace frmweatherwid
     internal enum TempUnit { Celsius, Fahrenheit }
     internal enum WallpaperMode { Online, Folder, None }
 
-    internal sealed record SavedCity(double Latitude, double Longitude, string Name);
+    internal sealed record SavedCity(double Latitude, double Longitude, string Name, string? TimeZone = null);
 
     /// <summary>
     /// User settings in HKCU\Software\FrmWeatherWidget (same key as before, so nothing is lost).
@@ -62,6 +62,13 @@ namespace frmweatherwid
         {
             get => int.TryParse(Get("Hotkey"), out var k) ? (Keys)k : Keys.Control | Keys.Alt | Keys.W;
             set => Set("Hotkey", ((int)value).ToString(CultureInfo.InvariantCulture));
+        }
+
+        /// <summary>Release tag that failed to start on this PC and was rolled back — auto-update skips it.</summary>
+        public static string SkipUpdateTag
+        {
+            get => Get("SkipUpdateTag") ?? "";
+            set => Write("SkipUpdateTag", value); // silent: not a user-visible setting
         }
 
         /// <summary>Vietnamese lunar date under the Gregorian date (default on).</summary>

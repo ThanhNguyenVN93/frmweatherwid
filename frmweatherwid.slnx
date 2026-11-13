@@ -1,3 +1,4 @@
 <Solution>
   <Project Path="frmweatherwid.csproj" />
+  <Project Path="tests/WeatherWidget.Tests/WeatherWidget.Tests.csproj" />
 </Solution>

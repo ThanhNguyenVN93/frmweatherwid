@@ -13,6 +13,23 @@ namespace frmweatherwid
 
         public static readonly Entry[] Entries =
         [
+            new(new Version(1, 2, 3),
+                [
+                    "Tự cập nhật an toàn hơn: bản mới lỗi khi khởi động thì tự quay lại bản cũ.",
+                    "Gỡ cài đặt sạch trong Settings → Apps → Installed apps hoặc nút 🗑 trong Cài đặt (gỡ được cả khi đã lỡ xoá file exe).",
+                    "Mở máy là thấy ngay thời tiết lần trước, kể cả khi mất mạng.",
+                    "Thành phố ở múi giờ khác (vd Tokyo) hiển thị đúng giờ địa phương.",
+                    "Ảnh nền Bing + Unsplash (dự phòng Wikimedia Commons); rê chuột lên widget để xem tác giả ảnh.",
+                    "Cửa sổ Giới thiệu ghi rõ nguồn dữ liệu và giấy phép; phần mềm tự do theo GPL-3.0.",
+                ],
+                [
+                    "Safer auto-update: if a new version fails to start, the previous one is restored automatically.",
+                    "Clean uninstall from Settings → Apps → Installed apps or the 🗑 button in Settings (works even if the exe was already deleted).",
+                    "The last known weather shows instantly at startup, even offline.",
+                    "Cities in another time zone (e.g. Tokyo) show correct local times.",
+                    "Wallpapers from Bing + Unsplash (Wikimedia Commons as fallback); hover the widget to see the photo credit.",
+                    "About window with data sources and licences; free software under GPL-3.0.",
+                ]),
             new(new Version(1, 2, 2),
                 [
                     "Báo trước khi sắp mưa (trong 60 phút) và cảnh báo khi không khí xấu (AQI trên 150).",

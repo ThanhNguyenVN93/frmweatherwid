@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace frmweatherwid
 {
@@ -61,8 +62,8 @@ namespace frmweatherwid
         /// <summary>UTC offset of the forecast location (Open-Meteo knows it; other sources assume this PC's zone).</summary>
         public TimeSpan UtcOffset { get; init; } = TimeZoneInfo.Local.GetUtcOffset(DateTime.UtcNow);
 
-        public DateTime LocalNow => DateTime.UtcNow + UtcOffset;
-        public DailyForecast? Today => Daily.FirstOrDefault(d => d.Date == DateOnly.FromDateTime(LocalNow));
+        [JsonIgnore] public DateTime LocalNow => DateTime.UtcNow + UtcOffset;
+        [JsonIgnore] public DailyForecast? Today => Daily.FirstOrDefault(d => d.Date == DateOnly.FromDateTime(LocalNow));
     }
 
     /// <summary>
@@ -83,7 +84,7 @@ namespace frmweatherwid
         private static readonly string[] MetSummaryBlocks = ["next_1_hours", "next_6_hours", "next_12_hours"];
 
         private readonly HttpClient http;
-        private readonly (string Name, Func<string, string, CancellationToken, Task<WeatherData>> Fetch)[] providers;
+        private readonly (string Name, Func<string, string, TimeZoneInfo, CancellationToken, Task<WeatherData>> Fetch)[] providers;
         private readonly DateTime[] cooldownUntil;
 
         public WeatherService(HttpClient http)
@@ -99,9 +100,10 @@ namespace frmweatherwid
         }
 
         /// <summary>Returns data from the first provider that answers, or null if all fail.</summary>
-        public async Task<WeatherData?> GetCurrentAsync(double latitude, double longitude, CancellationToken ct = default)
+        public async Task<WeatherData?> GetCurrentAsync(double latitude, double longitude, string? timeZone = null, CancellationToken ct = default)
         {
             var (lat, lon) = (Coord(latitude), Coord(longitude));
+            var zone = ResolveZone(timeZone);
 
             // Providers that failed recently are skipped (unless every one is cooling down).
             var now   = DateTime.UtcNow;
@@ -114,7 +116,7 @@ namespace frmweatherwid
                 {
                     using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                     cts.CancelAfter(ProviderTimeout);
-                    var data = await providers[i].Fetch(lat, lon, cts.Token);
+                    var data = await providers[i].Fetch(lat, lon, zone, cts.Token);
                     cooldownUntil[i] = DateTime.MinValue;
                     return FillSunTimes(data, latitude, longitude);
                 }
@@ -149,6 +151,19 @@ namespace frmweatherwid
 
         private static string Coord(double v) => v.ToString("0.####", Inv);
 
+        /// <summary>IANA zone of the place (e.g. "Asia/Tokyo"); this PC's zone when unknown or not installed.</summary>
+        internal static TimeZoneInfo ResolveZone(string? id)
+        {
+            if (!string.IsNullOrEmpty(id))
+            {
+                try { return TimeZoneInfo.FindSystemTimeZoneById(id); }
+                catch (Exception ex) { AppLog.Warn($"Unknown time zone {id}", ex); }
+            }
+            return TimeZoneInfo.Local;
+        }
+
+        private static DateTime LocalNow(TimeZoneInfo zone) => TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, zone);
+
         /// <summary>Providers without sunrise/sunset (MET Norway) get them computed locally — no network needed.</summary>
         private static WeatherData FillSunTimes(WeatherData data, double lat, double lon)
         {
@@ -160,7 +175,7 @@ namespace frmweatherwid
 
         // ================================================================ Open-Meteo
 
-        private async Task<WeatherData> FetchOpenMeteoAsync(string lat, string lon, CancellationToken ct)
+        private async Task<WeatherData> FetchOpenMeteoAsync(string lat, string lon, TimeZoneInfo zone, CancellationToken ct)
         {
             var url = $"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}" +
                       "&current=temperature_2m,relative_humidity_2m,wind_speed_10m,apparent_temperature,weather_code,is_day,uv_index,precipitation" +
@@ -244,7 +259,7 @@ namespace frmweatherwid
         }
 
         /// <summary>First 15-minute slot from now with ≥ 0.1 mm of rain.</summary>
-        private static DateTime? ParseOpenMeteoRainStart(JsonElement m15, DateTime localNow)
+        internal static DateTime? ParseOpenMeteoRainStart(JsonElement m15, DateTime localNow)
         {
             var times = m15.GetProperty("time");
             var precip = m15.GetProperty("precipitation");
@@ -258,7 +273,7 @@ namespace frmweatherwid
 
         // ================================================================ MET Norway
 
-        private async Task<WeatherData> FetchMetNorwayAsync(string lat, string lon, CancellationToken ct)
+        private async Task<WeatherData> FetchMetNorwayAsync(string lat, string lon, TimeZoneInfo zone, CancellationToken ct)
         {
             // Docs: https://api.met.no/weatherapi/locationforecast/2.0/documentation (requires a User-Agent)
             var url = $"https://api.met.no/weatherapi/locationforecast/2.0/compact?lat={lat}&lon={lon}";
@@ -274,12 +289,13 @@ namespace frmweatherwid
             var kind     = FromMetSymbol(symbol);
 
             return new WeatherData(temp, rh, windM * 3.6, ApparentTemperature(temp, rh, windM),
-                                   kind, "MET Norway", Safe(() => ParseMetDaily(series)))
+                                   kind, "MET Norway", Safe(() => ParseMetDaily(series, zone)))
             {
-                IsDay        = MetIsDay(symbol, DateTime.Now),
+                UtcOffset    = zone.GetUtcOffset(DateTime.UtcNow),
+                IsDay        = MetIsDay(symbol, LocalNow(zone)),
                 RainingNow   = (MetPrecip(now) ?? 0) > 0.05 || IsWet(kind),
-                RainStartsAt = SafeValue(() => ParseMetRainStart(series)),
-                Hourly       = Safe(() => ParseMetHourly(series)),
+                RainStartsAt = SafeValue(() => ParseMetRainStart(series, zone)),
+                Hourly       = Safe(() => ParseMetHourly(series, zone)),
             };
         }
 
@@ -302,16 +318,17 @@ namespace frmweatherwid
         private static bool MetIsDay(string symbol, DateTime local) =>
             symbol.EndsWith("_night") ? false : symbol.EndsWith("_day") || symbol.EndsWith("_polartwilight") || local.Hour is >= 6 and < 18;
 
-        private static DateTime MetLocalTime(JsonElement entry) =>
-            DateTime.Parse(entry.GetProperty("time").GetString()!, Inv, DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal).ToLocalTime();
+        private static DateTime MetLocalTime(JsonElement entry, TimeZoneInfo zone) =>
+            TimeZoneInfo.ConvertTimeFromUtc(
+                DateTime.Parse(entry.GetProperty("time").GetString()!, Inv, DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal), zone);
 
         /// <summary>MET gives a UTC time series — group it into local days: min/max temp, symbol nearest noon.</summary>
-        private static List<DailyForecast> ParseMetDaily(JsonElement series)
+        private static List<DailyForecast> ParseMetDaily(JsonElement series, TimeZoneInfo zone)
         {
             var days = new SortedDictionary<DateOnly, (double Min, double Max, string Symbol, double NoonDist)>();
             foreach (var entry in series.EnumerateArray())
             {
-                var local = MetLocalTime(entry);
+                var local = MetLocalTime(entry, zone);
                 var data  = entry.GetProperty("data");
                 double t  = data.GetProperty("instant").GetProperty("details").GetProperty("air_temperature").GetDouble();
                 var day   = DateOnly.FromDateTime(local);
@@ -329,13 +346,14 @@ namespace frmweatherwid
                        .ToList();
         }
 
-        private static List<HourlyForecast> ParseMetHourly(JsonElement series)
+        private static List<HourlyForecast> ParseMetHourly(JsonElement series, TimeZoneInfo zone)
         {
-            var start = DateTime.Now.Date.AddHours(DateTime.Now.Hour);
+            var now   = LocalNow(zone);
+            var start = now.Date.AddHours(now.Hour);
             var list  = new List<HourlyForecast>();
             foreach (var entry in series.EnumerateArray())
             {
-                var t = MetLocalTime(entry);
+                var t = MetLocalTime(entry, zone);
                 if (t < start) continue;
                 if (list.Count >= HourlyCount || t > start.AddHours(HourlyCount)) break;
                 var data = entry.GetProperty("data");
@@ -348,37 +366,40 @@ namespace frmweatherwid
         }
 
         /// <summary>MET has hourly precipitation amounts: first of the next two hours with rain.</summary>
-        private static DateTime? ParseMetRainStart(JsonElement series)
+        private static DateTime? ParseMetRainStart(JsonElement series, TimeZoneInfo zone)
         {
+            var now = LocalNow(zone);
             for (int i = 0; i < Math.Min(3, series.GetArrayLength()); i++)
             {
                 var entry = series[i];
-                var t = MetLocalTime(entry);
-                if (t.AddHours(1) <= DateTime.Now) continue;
-                if ((MetPrecip(entry.GetProperty("data")) ?? 0) >= 0.1) return t < DateTime.Now ? DateTime.Now : t;
+                var t = MetLocalTime(entry, zone);
+                if (t.AddHours(1) <= now) continue;
+                if ((MetPrecip(entry.GetProperty("data")) ?? 0) >= 0.1) return t < now ? now : t;
             }
             return null;
         }
 
         // ================================================================ wttr.in
 
-        private async Task<WeatherData> FetchWttrAsync(string lat, string lon, CancellationToken ct)
+        private async Task<WeatherData> FetchWttrAsync(string lat, string lon, TimeZoneInfo zone, CancellationToken ct)
         {
             var url = $"https://wttr.in/{lat},{lon}?format=j1";
             using var doc = await GetJsonAsync(url, ct);
             var root = doc.RootElement;
             var cur  = root.GetProperty("current_condition")[0];
             var days = Safe(() => ParseWttrDaily(root.GetProperty("weather")));
-            var today = days.FirstOrDefault(d => d.Date == DateOnly.FromDateTime(DateTime.Now));
+            var now   = LocalNow(zone); // wttr.in reports times in the location's local time
+            var today = days.FirstOrDefault(d => d.Date == DateOnly.FromDateTime(now));
             var kind = FromWwo((int)Str(cur, "weatherCode"));
 
             return new WeatherData(Str(cur, "temp_C"), Str(cur, "humidity"), Str(cur, "windspeedKmph"), Str(cur, "FeelsLikeC"),
                                    kind, "wttr.in", days)
             {
-                IsDay      = today is { Sunrise: { } sr, Sunset: { } ss } ? DateTime.Now >= sr && DateTime.Now < ss : DateTime.Now.Hour is >= 6 and < 18,
+                UtcOffset  = zone.GetUtcOffset(DateTime.UtcNow),
+                IsDay      = today is { Sunrise: { } sr, Sunset: { } ss } ? now >= sr && now < ss : now.Hour is >= 6 and < 18,
                 UvIndex    = SafeValue<double>(() => Str(cur, "uvIndex")),
                 RainingNow = IsWet(kind),
-                Hourly     = Safe(() => ParseWttrHourly(root.GetProperty("weather"), days)),
+                Hourly     = Safe(() => ParseWttrHourly(root.GetProperty("weather"), days, now)),
             };
         }
 
@@ -400,9 +421,9 @@ namespace frmweatherwid
             }).ToList();
 
         /// <summary>3-hourly slots ("0", "300" … "2100") from today and tomorrow.</summary>
-        private static List<HourlyForecast> ParseWttrHourly(JsonElement weather, List<DailyForecast> days)
+        private static List<HourlyForecast> ParseWttrHourly(JsonElement weather, List<DailyForecast> days, DateTime now)
         {
-            var from = DateTime.Now.AddHours(-2);
+            var from = now.AddHours(-2);
             var list = new List<HourlyForecast>();
             foreach (var day in weather.EnumerateArray())
             {
@@ -411,7 +432,7 @@ namespace frmweatherwid
                 foreach (var h in day.GetProperty("hourly").EnumerateArray())
                 {
                     var t = date.ToDateTime(TimeOnly.MinValue).AddHours((int)Str(h, "time") / 100);
-                    if (t < from || t > DateTime.Now.AddHours(HourlyCount)) continue;
+                    if (t < from || t > now.AddHours(HourlyCount)) continue;
                     bool isDay = info is { Sunrise: { } sr, Sunset: { } ss } ? t >= sr && t < ss : t.Hour is >= 6 and < 18;
                     list.Add(new HourlyForecast(t, Str(h, "tempC"), FromWwo((int)Str(h, "weatherCode")), isDay, (int)Str(h, "chanceofrain")));
                 }
