@@ -13,6 +13,29 @@ namespace frmweatherwid
 
         public static readonly Entry[] Entries =
         [
+            new(new Version(1, 2, 2),
+                [
+                    "Báo trước khi sắp mưa (trong 60 phút) và cảnh báo khi không khí xấu (AQI trên 150).",
+                    "Icon theo ngày/đêm; giờ mặt trời mọc/lặn và chỉ số UV trong bảng dự báo.",
+                    "Dự báo 24 giờ tới (mỗi 3 giờ) phía trên dự báo 6 ngày.",
+                    "Phím tắt ẩn/hiện widget (mặc định Ctrl+Alt+W).",
+                    "Lưu nhiều thành phố, đổi nhanh trong menu khay → 📍 Vị trí.",
+                    "Cửa sổ Cài đặt: °C/°F, độ trong suốt, hình nền (online / thư mục ảnh / tắt), thông báo, phím tắt.",
+                    "Kéo widget đi đâu cũng được và nhớ vị trí; mỗi màn hình một widget.",
+                    "Ghi log lỗi và nút 🐞 Báo lỗi trên GitHub.",
+                    "Ô ngày dưới ô trích dẫn: dương lịch + âm lịch Việt Nam (can chi), bật/tắt trong Cài đặt.",
+                ],
+                [
+                    "Rain heads-up (within 60 min) and an unhealthy-air alert (AQI above 150).",
+                    "Day/night icons; sunrise/sunset and UV index in the forecast panel.",
+                    "Next 24 hours (every 3 h) above the 6-day forecast.",
+                    "Show/hide hotkey (default Ctrl+Alt+W).",
+                    "Save several cities and switch from the tray → 📍 Location.",
+                    "Settings window: °C/°F, opacity, wallpaper (online / picture folder / off), alerts, hotkey.",
+                    "Drag the widget anywhere and it stays there; one widget per monitor.",
+                    "Error log and a 🐞 Report bug on GitHub button.",
+                    "Date box under the quote: Gregorian + Vietnamese lunar date (Can Chi year); toggle in Settings.",
+                ]),
             new(new Version(1, 2, 1),
                 [
                     "Chọn ngôn ngữ Tiếng Việt / English (khay → 🌐 Ngôn ngữ); tên địa danh cũng theo ngôn ngữ.",

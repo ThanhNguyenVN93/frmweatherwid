@@ -41,24 +41,15 @@ namespace frmweatherwid
             }
 
             ApplicationConfiguration.Initialize();
-            using (var form = new FrmWeatherWidget(updatedFrom))
+            AppLog.InstallGlobalHandlers();
+            using (var app = new AppController(updatedFrom, openSettings: args.Contains("--settings")))
             {
-                var registration = ThreadPool.RegisterWaitForSingleObject(showEvent, (_, _) =>
-                {
-                    try
-                    {
-                        if (form.IsHandleCreated && !form.IsDisposed)
-                            form.BeginInvoke(form.ShowWidget);
-                    }
-                    catch (Exception ex) when (ex is InvalidOperationException or ObjectDisposedException)
-                    {
-                        // form is closing — ignore (an unhandled exception here would kill the process)
-                    }
-                }, null, Timeout.Infinite, executeOnlyOnce: false);
-
+                // A second launch signals us → show the widgets (RequestShow marshals to the UI thread itself).
+                var registration = ThreadPool.RegisterWaitForSingleObject(showEvent, (_, _) => app.RequestShow(),
+                                                                          null, Timeout.Infinite, executeOnlyOnce: false);
                 try
                 {
-                    Application.Run(form);
+                    Application.Run(app);
                 }
                 finally
                 {

@@ -1,0 +1,61 @@
+name: Build & Release
+
+# - push / pull request to main  → build check (catches compile errors)
+# - push a tag vX.Y.Z            → publish the single-file exe and create the GitHub release
+#   (installed copies of the widget auto-update from the latest release's WeatherWidget.exe)
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write # create releases
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Check tag matches the project version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $tag = '${{ github.ref_name }}'.TrimStart('v')
+          $ver = ([xml](Get-Content frmweatherwid.csproj)).Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1
+          if ($tag -ne $ver) { throw "Tag v$tag doesn't match <Version>$ver</Version> in frmweatherwid.csproj" }
+          "Version $ver OK"
+
+      - name: Publish single-file exe
+        shell: pwsh
+        run: dotnet publish frmweatherwid.csproj -c Release -r win-x64 -o out
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: WeatherWidget
+          path: out/WeatherWidget.exe
+          retention-days: 14
+
+      - name: Create GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = '${{ github.ref_name }}'
+          ./.github/scripts/release-notes.ps1 -Version $tag.TrimStart('v') -Out notes.md
+          # Asset name must stay WeatherWidget.exe — the in-app updater looks for exactly that.
+          gh release view $tag 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag out/WeatherWidget.exe --clobber
+          } else {
+            gh release create $tag "out/WeatherWidget.exe#WeatherWidget.exe (Windows x64, self-contained)" --title $tag --notes-file notes.md
+          }
