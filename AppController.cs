@@ -20,7 +20,7 @@ namespace frmweatherwid
         private const string RunKeyPath      = @"Software\Microsoft\Windows\CurrentVersion\Run";
         private const string SettingsKeyPath = @"Software\FrmWeatherWidget";
         private const string DonateUrl       = "https://nguyenthanhdev.com/donate/";
-        public const string RepoUrl          = "https://github.com/ThanhNguyenVN93/frmweatherwid";
+        public const string RepoUrl          = "https://github.com/ThanhNguyenVN93/weather-widget";
 
         private const int RefreshMs          = 15 * 60_000;    // also how fresh the "rain soon" alert is
         private const int RetryMs            = 5 * 60_000;     // after every provider failed

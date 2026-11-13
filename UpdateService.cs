@@ -13,7 +13,7 @@ namespace frmweatherwid
     /// </summary>
     internal sealed class UpdateService(HttpClient http)
     {
-        private const string LatestReleaseApi = "https://api.github.com/repos/ThanhNguyenVN93/frmweatherwid/releases/latest";
+        private const string LatestReleaseApi = "https://api.github.com/repos/ThanhNguyenVN93/weather-widget/releases/latest";
         private const string AssetName        = "WeatherWidget.exe";
 
         public static Version CurrentVersion { get; } = ParseVersion(Application.ProductVersion) ?? new Version(0, 0, 0);

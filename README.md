@@ -2,7 +2,7 @@
 
 Widget thời tiết nhỏ cho Windows 10/11 x64 (WinForms, .NET 10), sống ở khay hệ thống. Một file `WeatherWidget.exe`, không cần cài .NET.
 
-**Tải về:** mục [Releases](https://github.com/ThanhNguyenVN93/frmweatherwid/releases/latest). Chạy `WeatherWidget.exe` là xong — để file ở thư mục bạn có quyền ghi (Desktop, Documents…) để app tự cập nhật được.
+**Tải về:** mục [Releases](https://github.com/ThanhNguyenVN93/weather-widget/releases/latest). Chạy `WeatherWidget.exe` là xong — để file ở thư mục bạn có quyền ghi (Desktop, Documents…) để app tự cập nhật được.
 
 ## Tính năng
 - Nhiệt độ, độ ẩm, gió, cảm giác như, AQI (US) tại vị trí hiện tại; icon theo ngày/đêm.

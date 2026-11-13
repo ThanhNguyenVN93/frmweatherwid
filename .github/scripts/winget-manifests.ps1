@@ -8,7 +8,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $id   = 'ThanhNguyenVN93.WeatherWidget'
-$repo = 'https://github.com/ThanhNguyenVN93/frmweatherwid'
+$repo = 'https://github.com/ThanhNguyenVN93/weather-widget'
 $url  = "$repo/releases/download/v$Version/WeatherWidget.exe"
 $sha  = (Get-FileHash $Exe -Algorithm SHA256).Hash
 $dir  = Join-Path $Out "manifests/t/ThanhNguyenVN93/WeatherWidget/$Version"

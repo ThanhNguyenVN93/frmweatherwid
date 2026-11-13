@@ -25,7 +25,7 @@
     <Authors>Nguyen Thanh</Authors>
     <Copyright>Copyright © 2026 Nguyen Thanh</Copyright>
     <NeutralLanguage>vi-VN</NeutralLanguage>
-    <RepositoryUrl>https://github.com/ThanhNguyenVN93/frmweatherwid</RepositoryUrl>
+    <RepositoryUrl>https://github.com/ThanhNguyenVN93/weather-widget</RepositoryUrl>
     <PackageLicenseExpression>GPL-3.0-or-later</PackageLicenseExpression>
     <Version>1.2.4</Version>
     <FileVersion>1.2.4.0</FileVersion>

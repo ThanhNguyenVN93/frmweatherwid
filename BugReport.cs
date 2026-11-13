@@ -10,7 +10,7 @@ namespace frmweatherwid
     /// </summary>
     internal static class BugReport
     {
-        private const string NewIssueUrl = "https://github.com/ThanhNguyenVN93/frmweatherwid/issues/new";
+        private const string NewIssueUrl = "https://github.com/ThanhNguyenVN93/weather-widget/issues/new";
         private const int MaxUrlLength   = 7500; // browsers/GitHub get unhappy with much longer URLs
 
         public static void Open(Exception? ex = null)

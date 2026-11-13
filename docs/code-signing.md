@@ -16,7 +16,7 @@ chúng **tự bỏ qua** cho tới khi bạn cấu hình xong các mục dưới
 
 ### 2. Đăng ký
 1. Vào **https://signpath.org** → *Apply* (chương trình Open Source).
-2. Điền form: tên dự án `Weather Widget`, repo `https://github.com/ThanhNguyenVN93/frmweatherwid`,
+2. Điền form: tên dự án `Weather Widget`, repo `https://github.com/ThanhNguyenVN93/weather-widget`,
    mô tả ngắn, loại file cần ký: **Windows executable (.exe), Authenticode**.
 3. Chờ duyệt (thường vài ngày – vài tuần). Họ có thể hỏi thêm qua email.
 
