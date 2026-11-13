@@ -18,6 +18,7 @@ Widget thời tiết nhỏ cho Windows 10 (2004+) / 11 (WinForms, .NET 10), số
 
   Mỗi nguồn timeout 8s; nguồn nào lỗi sẽ bị bỏ qua 15 phút. AQI lấy từ Open-Meteo Air Quality (tùy chọn, lỗi không ảnh hưởng thời tiết).
 - Làm mới mỗi 30 phút; nếu tất cả nguồn lỗi thì thử lại sau 5 phút và giữ số liệu cũ.
+- **Tự cập nhật** — `UpdateService.cs`: 1 phút sau khi khởi động rồi mỗi 6 giờ, app kiểm tra bản mới trên GitHub Releases. Có bản mới thì tải `WeatherWidget.exe` về cạnh exe hiện tại, kiểm tra kích thước + SHA-256, rồi thay file và tự khởi động lại (đợi lúc widget đang ẩn). Khay → *Kiểm tra cập nhật* để làm ngay. Chỉ bản phát hành (`WeatherWidget.exe` single-file) mới tự cập nhật; bản build trong `bin\` thì không.
 - **Chỉ chạy 1 instance**: mở lần nữa sẽ hiện widget đang chạy thay vì mở bản mới.
 - Hình nền xoay vòng (Bing 1024x768 + Wallhaven), cache tại `%TEMP%\FrmWeatherWidget` (tự xoá file >14 ngày).
 - Trích dẫn từ ZenQuotes, đổi mỗi 15s.
@@ -38,3 +39,8 @@ dotnet publish -c Release -r win-x64 -o publish
 ```
 
 Bản build sẵn: xem mục **Releases** của repo.
+
+## Phát hành bản mới
+1. Tăng `<Version>` / `<FileVersion>` trong `frmweatherwid.csproj`.
+2. `dotnet publish -c Release -r win-x64 -o publish`
+3. `gh release create vX.Y.Z publish/WeatherWidget.exe --title vX.Y.Z --notes "..."` — tên file phải đúng là `WeatherWidget.exe`; các máy đang chạy sẽ tự cập nhật.
