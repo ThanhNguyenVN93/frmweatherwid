@@ -15,23 +15,32 @@ namespace frmweatherwid
         private const string RunKeyPath      = @"Software\Microsoft\Windows\CurrentVersion\Run";
         private const string SettingsKeyPath = @"Software\FrmWeatherWidget";
 
+        private const int FormWidth      = 400;
+        private const int BaseHeight     = 300;                   // collapsed
+        private const int ForecastHeight = 116;                   // extra height when the forecast is open
+        private const int ExpandedHeight = BaseHeight + ForecastHeight;
+
         private const int RefreshMs         = 30 * 60_000; // normal refresh
         private const int RetryMs           = 5 * 60_000;  // after every provider failed
         private const int ResumeDelayMs     = 15_000;      // after waking from sleep
         private const int WallpaperRotateMs = 60_000;
         private const int QuoteRotateMs     = 15_000;
+        private const int ScrimAlpha        = 110;         // dark layer over the wallpaper (see OnPaint)
 
         // ------------------------------------------------------------------ shared resources
         private static readonly HttpClient Http = CreateHttpClient();
 
-        private static readonly Font FontTemp    = new("Segoe UI", 24f,  FontStyle.Bold);
-        private static readonly Font FontStats   = new("Segoe UI", 10f,  FontStyle.Bold);
-        private static readonly Font FontAqi     = new("Segoe UI", 9.5f, FontStyle.Bold);
-        private static readonly Font FontStatus  = new("Segoe UI", 9f,   FontStyle.Bold | FontStyle.Italic);
-        private static readonly Font FontQuote   = new("Segoe UI", 7.5f, FontStyle.Italic);
-        private static readonly Font FontAuthor  = new("Segoe UI", 7f,   FontStyle.Bold);
-        private static readonly Font FontSmall   = new("Segoe UI", 9f,   FontStyle.Bold);
-        private static readonly Font FontHint    = new("Segoe UI", 8f,   FontStyle.Bold);
+        private static readonly Font FontTemp     = new("Segoe UI", 24f,  FontStyle.Bold);
+        private static readonly Font FontStats    = new("Segoe UI", 10f,  FontStyle.Bold);
+        private static readonly Font FontAqi      = new("Segoe UI", 9.5f, FontStyle.Bold);
+        private static readonly Font FontStatus   = new("Segoe UI", 9f,   FontStyle.Bold | FontStyle.Italic);
+        private static readonly Font FontQuote    = new("Segoe UI", 7.5f, FontStyle.Italic);
+        private static readonly Font FontAuthor   = new("Segoe UI", 7f,   FontStyle.Bold);
+        private static readonly Font FontSmall    = new("Segoe UI", 9f,   FontStyle.Bold);
+        private static readonly Font FontHint     = new("Segoe UI", 8f,   FontStyle.Bold);
+        private static readonly Font FontDay      = new("Segoe UI", 8.5f, FontStyle.Bold);
+        private static readonly Font FontDayTemp  = new("Segoe UI", 9.5f, FontStyle.Bold);
+        private static readonly Font FontDaySmall = new("Segoe UI", 7.5f, FontStyle.Regular);
         private static readonly StringFormat CenterFormat = new() { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
         private static readonly StringFormat QuoteFormat  = new() { Trimming = StringTrimming.EllipsisWord };
 
@@ -40,11 +49,10 @@ namespace frmweatherwid
         private GeoLocation location;
 
         // ------------------------------------------------------------------ controls
-        private readonly Label lblCity;
-        private Font? cityFont; // sized to fit the current city name
         private readonly PictureBox pictureWeather;
-        private readonly Panel pnlTemperature, pnlStats, pnlAqi, pnlStatus, pnlQuote;
+        private readonly Panel pnlCity, pnlTemperature, pnlStats, pnlAqi, pnlStatus, pnlQuote, pnlForecast;
         private readonly CheckBox chkStartup;
+        private readonly Label lblHint, lblForecastToggle;
         private readonly NotifyIcon trayIcon;
 
         private readonly System.Windows.Forms.Timer refreshTimer   = new() { Interval = RefreshMs };
@@ -60,6 +68,8 @@ namespace frmweatherwid
         private readonly string? updatedFrom;                     // set when we were just restarted by an update
         private bool isCheckingUpdate;
         private bool dialogOpen;
+        private WhatsNewForm? whatsNew;
+        private const string DonateUrl = "https://nguyenthanhdev.com/donate/";
         private (string File, UpdateInfo Info)? pendingUpdate;   // downloaded + verified, waiting to be applied
 
         // ------------------------------------------------------------------ state
@@ -74,6 +84,14 @@ namespace frmweatherwid
         private int loadingDots;
         private bool started;
         private bool suppressStartupEvent;
+
+        private Font? cityFont;                      // sized to fit the current city name
+        private Color cityColor = Color.FromArgb(77, 184, 255);
+        private Color cityShadow = Color.FromArgb(170, 0, 0, 0);
+
+        private bool forecastOpen;
+        private int? topBeforeExpand;                // where the widget was before opening pushed it up
+        private readonly Dictionary<WeatherKind, Bitmap> smallIcons = [];
 
         private readonly List<Bitmap> wallpapers = [];
         private int wallpaperIndex;
@@ -91,28 +109,16 @@ namespace frmweatherwid
             SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint, true);
 
             FormBorderStyle       = FormBorderStyle.None;
-            ClientSize            = new Size(400, 300);
-            MaximumSize           = MinimumSize = ClientSize;
+            ClientSize            = new Size(FormWidth, BaseHeight);
             Opacity               = 0.95;
             ShowInTaskbar         = false; // lives in the tray
             BackColor             = Color.FromArgb(20, 20, 20);
             StartPosition         = FormStartPosition.Manual;
-            BackgroundImageLayout = ImageLayout.None; // wallpapers are pre-scaled to ClientSize
+            BackgroundImageLayout = ImageLayout.None; // wallpapers are pre-scaled to FormWidth x ExpandedHeight
             KeyPreview            = true;
 
             // Start with the last known place (instant), re-detected in OnStartedAsync.
             location = locationService.ManualLocation ?? locationService.CachedLocation ?? LocationService.DefaultLocation;
-
-            lblCity = new Label
-            {
-                AutoSize     = false,
-                Bounds       = new Rectangle(190, 10, 206, 58),
-                TextAlign    = ContentAlignment.MiddleLeft,
-                AutoEllipsis = true,
-                ForeColor    = Color.DodgerBlue,
-                BackColor    = Color.Transparent,
-            };
-            SetCityLabel(location.Name);
 
             pictureWeather = new PictureBox
             {
@@ -123,39 +129,49 @@ namespace frmweatherwid
             };
             pictureWeather.Image = CreatePlaceholderIcon(pictureWeather.Size);
 
+            pnlCity        = CreatePill(new Rectangle(188, 8, 208, 62),  alpha: 0,   radius: 10, PaintCity);
             pnlQuote       = CreatePill(new Rectangle(8, 138, 178, 72),  alpha: 140, radius: 10, PaintQuote);
             pnlStats       = CreatePill(new Rectangle(190, 73, 202, 66), alpha: 170, radius: 10, PaintStats);
             pnlTemperature = CreatePill(new Rectangle(186, 148, 208, 48), alpha: 170, radius: 12, PaintTemperature);
             pnlAqi         = CreatePill(new Rectangle(186, 206, 208, 26), alpha: 120, radius: 10, PaintAqi);
             pnlStatus      = CreatePill(new Rectangle(100, 238, 200, 22), alpha: 130, radius: 10, PaintStatus);
-            pnlQuote.Visible = false; // until quotes are loaded
+            pnlForecast    = CreatePill(new Rectangle(8, BaseHeight + 2, FormWidth - 16, ForecastHeight - 10), alpha: 160, radius: 12, PaintForecast);
+            pnlQuote.Visible    = false; // until quotes are loaded
+            pnlForecast.Visible = false;
+            SetCityLabel(location.Name);
 
             chkStartup = new CheckBox
             {
                 AutoSize  = true,
-                Text      = "Run at Startup",
                 Font      = FontSmall,
                 ForeColor = Color.LightSeaGreen,
                 BackColor = Color.FromArgb(160, 0, 0, 0),
                 Padding   = new Padding(6, 3, 6, 3),
             };
-            chkStartup.Size     = chkStartup.PreferredSize;
-            chkStartup.Location = new Point(12, ClientSize.Height - chkStartup.Height - 8);
             chkStartup.CheckedChanged += ChkStartup_CheckedChanged;
 
-            var lblHint = new Label
+            lblHint = new Label
             {
                 AutoSize  = true,
                 Font      = FontHint,
                 ForeColor = Color.White,
                 BackColor = Color.FromArgb(100, 0, 0, 0),
-                Text      = "Press ESC to Hide",
                 Padding   = new Padding(6, 4, 6, 4),
             };
-            lblHint.Size     = lblHint.PreferredSize;
-            lblHint.Location = new Point(ClientSize.Width - lblHint.Width - 8, ClientSize.Height - lblHint.Height - 8);
 
-            Controls.AddRange([lblCity, pictureWeather, chkStartup, lblHint]);
+            lblForecastToggle = new Label
+            {
+                AutoSize  = true,
+                Font      = FontHint,
+                ForeColor = Color.White,
+                BackColor = Color.FromArgb(170, 25, 100, 190),
+                Padding   = new Padding(6, 4, 6, 4),
+                Cursor    = Cursors.Hand,
+            };
+            lblForecastToggle.Click += (_, _) => ToggleForecast();
+
+            Controls.AddRange([pictureWeather, chkStartup, lblHint, lblForecastToggle]);
+            ApplyLanguageToControls();
 
             // Drag on the form and on every child
             foreach (Control c in Controls.Cast<Control>().Append(this))
@@ -186,8 +202,10 @@ namespace frmweatherwid
 
             trayIcon = CreateTrayIcon();
             UpdateTray();
+            UpdateCityColor();
 
             SystemEvents.PowerModeChanged += OnPowerModeChanged;
+            L.Changed += OnLanguageChanged;
 
             // Load doesn't fire because the form starts hidden — use HandleCreated instead.
             HandleCreated += async (_, _) =>
@@ -212,7 +230,7 @@ namespace frmweatherwid
             return client;
         }
 
-        /// <summary>Transparent owner-drawn panel with a rounded dark background.</summary>
+        /// <summary>Transparent owner-drawn panel with a rounded dark background (alpha 0 = no background).</summary>
         private Panel CreatePill(Rectangle bounds, int alpha, int radius, Action<Graphics, Rectangle> draw)
         {
             var panel = new BufferedPanel { BackColor = Color.Transparent, Bounds = bounds };
@@ -222,10 +240,12 @@ namespace frmweatherwid
                 g.SmoothingMode     = SmoothingMode.AntiAlias;
                 g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
 
-                using (var bg = new SolidBrush(Color.FromArgb(alpha, 0, 0, 0)))
-                using (var path = RoundedPath(panel.ClientRectangle, radius))
+                if (alpha > 0)
+                {
+                    using var bg   = new SolidBrush(Color.FromArgb(alpha, 0, 0, 0));
+                    using var path = RoundedPath(panel.ClientRectangle, radius);
                     g.FillPath(bg, path);
-
+                }
                 draw(g, panel.ClientRectangle);
             };
             Controls.Add(panel);
@@ -257,9 +277,9 @@ namespace frmweatherwid
                 _ = UpdateService.CleanupAsync();
                 updateTimer.Start();
             }
+            // Just restarted by the auto-updater → show what changed since the old version.
             if (updatedFrom is not null)
-                trayIcon.ShowBalloonTip(5000, "Weather Widget",
-                    $"Đã cập nhật lên v{UpdateService.CurrentVersion.ToString(3)} (từ v{updatedFrom}).", ToolTipIcon.Info);
+                ShowWhatsNew(Version.TryParse(updatedFrom, out var from) ? from : null);
             await weatherTask;
         }
 
@@ -292,7 +312,8 @@ namespace frmweatherwid
         {
             if (disposing)
             {
-                SystemEvents.PowerModeChanged -= OnPowerModeChanged; // static event — must unhook
+                SystemEvents.PowerModeChanged -= OnPowerModeChanged; // static events — must unhook
+                L.Changed -= OnLanguageChanged;
                 refreshTimer.Dispose();
                 loadingTimer.Dispose();
                 wallpaperTimer.Dispose();
@@ -307,6 +328,9 @@ namespace frmweatherwid
                 BackgroundImage = null;
                 foreach (var bmp in wallpapers) bmp.Dispose();
                 wallpapers.Clear();
+                foreach (var bmp in smallIcons.Values) bmp.Dispose();
+                smallIcons.Clear();
+                cityFont?.Dispose();
             }
             base.Dispose(disposing);
         }
@@ -329,6 +353,38 @@ namespace frmweatherwid
                 });
             }
             catch (Exception ex) when (ex is InvalidOperationException or ObjectDisposedException) { }
+        }
+
+        // ================================================================== language
+
+        /// <summary>Texts of the real controls (painted panels read L.T at paint time) + re-layout of the bottom row.</summary>
+        private void ApplyLanguageToControls()
+        {
+            chkStartup.Text        = L.T("Tự khởi động", "Run at Startup");
+            lblHint.Text           = L.T("Nhấn ESC để ẩn", "Press ESC to Hide");
+            lblForecastToggle.Text = (forecastOpen ? "▲ " : "▼ ") + L.T("Dự báo", "Forecast");
+
+            chkStartup.Size        = chkStartup.PreferredSize;
+            lblHint.Size           = lblHint.PreferredSize;
+            lblForecastToggle.Size = lblForecastToggle.PreferredSize;
+
+            // Bottom row (inside the collapsed area): [checkbox] ...... [▼ Forecast] [Press ESC]
+            // (Donate lives in the tray menu — the gap here is too narrow in some languages.)
+            chkStartup.Location        = new Point(12, BaseHeight - chkStartup.Height - 8);
+            lblHint.Location           = new Point(FormWidth - lblHint.Width - 8, BaseHeight - lblHint.Height - 8);
+            lblForecastToggle.Location = new Point(lblHint.Left - lblForecastToggle.Width - 6, lblHint.Top);
+        }
+
+        private void OnLanguageChanged()
+        {
+            ApplyLanguageToControls();
+            foreach (var p in (Panel[])[pnlCity, pnlStats, pnlAqi, pnlStatus, pnlTemperature, pnlForecast]) p.Invalidate();
+            UpdateTray();
+
+            // Place names come from the geocoder in the chosen language → fetch again (a manual pick keeps its name).
+            if (location.Source == LocationSource.Manual) return;
+            if (location.Source == LocationSource.Default) ApplyLocation(LocationService.DefaultLocation);
+            _ = UpdateWeatherAsync(relocate: true);
         }
 
         // ================================================================== weather
@@ -400,6 +456,7 @@ namespace frmweatherwid
                     pnlStats.Invalidate();
                     pnlAqi.Invalidate();
                     pnlStatus.Invalidate();
+                    pnlForecast.Invalidate();
                     UpdateTray();
 
                     if (refreshQueued)
@@ -425,29 +482,28 @@ namespace frmweatherwid
             SetCityLabel(found.Name);
         }
 
-        /// <summary>Largest font (28pt → 12pt) that fits the city name in the label.</summary>
+        /// <summary>Largest font (28pt → 12pt) that fits the city name.</summary>
         private void SetCityLabel(string name)
         {
             Font font;
             for (float size = 28f; ; size -= 2f)
             {
                 font = new Font("Segoe UI", size, FontStyle.Bold);
-                if (size <= 12f || TextRenderer.MeasureText(name, font).Width <= lblCity.Width - 4) break;
+                if (size <= 12f || TextRenderer.MeasureText(name, font).Width <= pnlCity.Width - 8) break;
                 font.Dispose();
             }
-            lblCity.Font = font;
-            lblCity.Text = name;
             cityFont?.Dispose();
             cityFont = font;
+            pnlCity.Invalidate();
         }
 
         private static string SourceLabel(LocationSource s) => s switch
         {
-            LocationSource.Windows => "định vị Windows",
-            LocationSource.IP      => "theo IP",
-            LocationSource.Manual  => "chọn thủ công",
-            LocationSource.Cached  => "lần trước",
-            _                      => "mặc định",
+            LocationSource.Windows => L.T("định vị Windows", "Windows location"),
+            LocationSource.IP      => L.T("theo IP", "by IP"),
+            LocationSource.Manual  => L.T("chọn thủ công", "chosen manually"),
+            LocationSource.Cached  => L.T("lần trước", "last known"),
+            _                      => L.T("mặc định", "default"),
         };
 
         private async Task PickCityAsync()
@@ -481,7 +537,8 @@ namespace frmweatherwid
         {
             if (!UpdateService.CanSelfUpdate)
             {
-                if (manual) Notify("Bản đang chạy không phải bản phát hành (WeatherWidget.exe) nên không tự cập nhật.", ToolTipIcon.Info);
+                if (manual) Notify(L.T("Bản đang chạy không phải bản phát hành (WeatherWidget.exe) nên không tự cập nhật.",
+                                       "This isn't a release build (WeatherWidget.exe), so it doesn't self-update."), ToolTipIcon.Info);
                 return;
             }
             if (pendingUpdate is not null)
@@ -496,10 +553,11 @@ namespace frmweatherwid
                 var info = await updateService.CheckAsync();
                 if (info is null)
                 {
-                    if (manual) Notify($"Đang dùng bản mới nhất (v{UpdateService.CurrentVersion.ToString(3)}).", ToolTipIcon.Info);
+                    if (manual) Notify(L.T($"Đang dùng bản mới nhất (v{UpdateService.CurrentVersion.ToString(3)}).",
+                                           $"You're on the latest version (v{UpdateService.CurrentVersion.ToString(3)})."), ToolTipIcon.Info);
                     return;
                 }
-                if (manual) Notify($"Đang tải bản {info.Tag}…", ToolTipIcon.Info);
+                if (manual) Notify(L.T($"Đang tải bản {info.Tag}…", $"Downloading {info.Tag}…"), ToolTipIcon.Info);
 
                 var file = await updateService.DownloadAsync(info);
                 if (IsDisposed) return;
@@ -509,7 +567,8 @@ namespace frmweatherwid
             catch
             {
                 // network / GitHub down / disk: try again at the next check
-                if (manual && !IsDisposed) Notify("Không kiểm tra được bản cập nhật. Sẽ thử lại sau.", ToolTipIcon.Warning);
+                if (manual && !IsDisposed) Notify(L.T("Không kiểm tra được bản cập nhật. Sẽ thử lại sau.",
+                                                      "Couldn't check for updates. Will try again later."), ToolTipIcon.Warning);
             }
             finally
             {
@@ -520,7 +579,7 @@ namespace frmweatherwid
         /// <summary>Swap the exe and restart — only when nobody is looking at the widget (unless forced).</summary>
         private void TryApplyPendingUpdate(bool force = false)
         {
-            if (pendingUpdate is not { } p || dialogOpen || IsDisposed) return;
+            if (pendingUpdate is not { } p || dialogOpen || whatsNew is not null || IsDisposed) return;
             if (Visible && !force) return; // VisibleChanged will call us again when hidden
 
             try
@@ -534,37 +593,226 @@ namespace frmweatherwid
             {
                 pendingUpdate = null; // files untouched/rolled back — retry on the next check
                 try { File.Delete(p.File); } catch { }
-                Notify($"Không cài được bản {p.Info.Tag} (thư mục chỉ đọc?).", ToolTipIcon.Warning);
+                Notify(L.T($"Không cài được bản {p.Info.Tag} (thư mục chỉ đọc?).",
+                           $"Couldn't install {p.Info.Tag} (read-only folder?)."), ToolTipIcon.Warning);
             }
         }
 
         private void Notify(string text, ToolTipIcon icon) => trayIcon.ShowBalloonTip(4000, "Weather Widget", text, icon);
 
+        /// <summary>Non-modal so the widget keeps working; only one window at a time.</summary>
+        private void ShowWhatsNew(Version? updatedFrom)
+        {
+            if (whatsNew is { IsDisposed: false })
+            {
+                whatsNew.Activate();
+                return;
+            }
+            whatsNew = new WhatsNewForm(updatedFrom);
+            whatsNew.FormClosed += (_, _) => { whatsNew = null; TryApplyPendingUpdate(); };
+            whatsNew.Show();
+        }
+
+        private void OpenDonatePage()
+        {
+            try
+            {
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(DonateUrl) { UseShellExecute = true });
+            }
+            catch
+            {
+                Notify(L.T("Không mở được trình duyệt: ", "Couldn't open the browser: ") + DonateUrl, ToolTipIcon.Warning);
+            }
+        }
+
+        /// <summary>US AQI bands; Vietnamese names follow the VN AQI scale (Tốt → Nguy hại).</summary>
         private static (int Index, string Label) ClassifyAqi(int aqi) => aqi switch
         {
-            <= 50  => (1, "Good"),
-            <= 100 => (2, "Moderate"),
-            <= 150 => (3, "Unhealthy (Sensitive)"),
-            <= 200 => (4, "Unhealthy"),
-            <= 300 => (5, "Very Unhealthy"),
-            _      => (6, "Hazardous"),
+            <= 50  => (1, L.T("Tốt", "Good")),
+            <= 100 => (2, L.T("Trung bình", "Moderate")),
+            <= 150 => (3, L.T("Kém", "Unhealthy (Sensitive)")),
+            <= 200 => (4, L.T("Xấu", "Unhealthy")),
+            <= 300 => (5, L.T("Rất xấu", "Very Unhealthy")),
+            _      => (6, L.T("Nguy hại", "Hazardous")),
         };
 
-        private string TempLabel => weather is null ? (lastFetchFailed ? "Err" : "-- °C") : $"{weather.TempC:0.#}°C";
+        private string TempLabel => weather is null ? (lastFetchFailed ? L.T("Lỗi", "Err") : "-- °C") : $"{weather.TempC:0.#}°C";
 
         private string StatusLabel
         {
             get
             {
                 if (isUpdating)
-                    return (isLocating ? "Locating" : "Loading") + new string('.', loadingDots % 4);
+                    return (isLocating ? L.T("Đang định vị", "Locating") : L.T("Đang tải", "Loading")) + new string('.', loadingDots % 4);
                 if (lastFetchFailed)
-                    return lastUpdated is { } t ? $"Offline · last {t:HH:mm}" : "Offline · retrying...";
-                return lastUpdated is { } u ? $"Updated {u:HH:mm} · {weather!.Source}" : "Updated --:--";
+                    return lastUpdated is { } t ? L.T($"Mất mạng · lần cuối {t:HH:mm}", $"Offline · last {t:HH:mm}")
+                                                : L.T("Mất mạng · đang thử lại…", "Offline · retrying...");
+                return lastUpdated is { } u ? L.T($"Cập nhật {u:HH:mm} · {weather!.Source}", $"Updated {u:HH:mm} · {weather!.Source}")
+                                            : L.T("Cập nhật --:--", "Updated --:--");
             }
         }
 
+        // ================================================================== forecast drop-down
+
+        private void ToggleForecast()
+        {
+            forecastOpen = !forecastOpen;
+            var area = Screen.FromControl(this).WorkingArea;
+
+            if (forecastOpen)
+            {
+                Height = ExpandedHeight;
+                // Not enough room below → move up so the whole forecast is visible; remember where we were.
+                if (Bottom > area.Bottom)
+                {
+                    topBeforeExpand = Top;
+                    Top = Math.Max(area.Top, area.Bottom - Height);
+                }
+            }
+            else
+            {
+                Height = BaseHeight;
+                if (topBeforeExpand is { } top) Top = top;
+                topBeforeExpand = null;
+            }
+
+            pnlForecast.Visible = forecastOpen;
+            lockedLocation = Location;
+            ApplyLanguageToControls(); // arrow ▼/▲
+            Invalidate();
+        }
+
+        private void PaintForecast(Graphics g, Rectangle r)
+        {
+            var days = weather?.Daily ?? [];
+            using var dim = new SolidBrush(Color.FromArgb(200, 255, 255, 255));
+            if (days.Count == 0)
+            {
+                g.DrawString(L.T("Chưa có dữ liệu dự báo", "No forecast data yet"), FontDay, dim, r, CenterFormat);
+                return;
+            }
+
+            var today   = DateOnly.FromDateTime(DateTime.Now);
+            int count   = Math.Min(days.Count, WeatherService.ForecastDays);
+            float colW  = (float)r.Width / count;
+            using var sep  = new Pen(Color.FromArgb(50, 255, 255, 255));
+            using var rain = new SolidBrush(Color.FromArgb(130, 200, 255));
+
+            for (int i = 0; i < count; i++)
+            {
+                var d = days[i];
+                float x = i * colW;
+                if (i > 0) g.DrawLine(sep, x, 12, x, r.Height - 12);
+
+                string dayName = d.Date == today
+                    ? L.T("Hôm nay", "Today")
+                    : L.Culture.DateTimeFormat.GetAbbreviatedDayName(d.Date.DayOfWeek);
+                g.DrawString(dayName, FontDay, Brushes.White, new RectangleF(x, 4, colW, 18), CenterFormat);
+
+                var icon = GetSmallIcon(d.Kind);
+                g.DrawImage(icon, x + (colW - icon.Width) / 2f, 22);
+
+                using (var hot = new SolidBrush(GetTemperatureColor(d.MaxC)))
+                {
+                    // "28° / 21°" — max in its temperature color, min dimmed
+                    string max = $"{Math.Round(d.MaxC)}°", min = $" / {Math.Round(d.MinC)}°";
+                    var maxW = g.MeasureString(max, FontDayTemp).Width;
+                    var minW = g.MeasureString(min, FontDaySmall).Width;
+                    float start = x + (colW - maxW - minW) / 2f;
+                    g.DrawString(max, FontDayTemp, hot, start, 58);
+                    g.DrawString(min, FontDaySmall, dim, start + maxW - 4, 61);
+                }
+
+                if (d.RainChance is { } chance)
+                {
+                    string pct = $"{chance}%";
+                    float textW = g.MeasureString(pct, FontDaySmall).Width, dropH = 9;
+                    float start = x + (colW - textW - dropH * 0.7f - 1) / 2f;
+                    DrawDrop(g, rain, start, 83, dropH);
+                    g.DrawString(pct, FontDaySmall, rain, start + dropH * 0.7f, 80);
+                }
+            }
+        }
+
+        private Bitmap GetSmallIcon(WeatherKind kind)
+        {
+            if (!smallIcons.TryGetValue(kind, out var bmp))
+                smallIcons[kind] = bmp = CreateWeatherIcon(kind, new Size(34, 34));
+            return bmp;
+        }
+
         // ================================================================== painting
+
+        /// <summary>City name with a soft outline, in whichever color reads best on the current wallpaper.</summary>
+        private void PaintCity(Graphics g, Rectangle r)
+        {
+            if (cityFont is null) return;
+            var name = location.Name;
+            var size = g.MeasureString(name, cityFont);
+            float x = 2, y = (r.Height - size.Height) / 2f;
+
+            using (var shadow = new SolidBrush(cityShadow))
+            {
+                foreach (var (dx, dy) in (ReadOnlySpan<(int, int)>)[(-1, 0), (1, 0), (0, -1), (0, 1), (2, 2)])
+                    g.DrawString(name, cityFont, shadow, x + dx, y + dy);
+            }
+            using var brush = new SolidBrush(cityColor);
+            g.DrawString(name, cityFont, brush, x, y);
+        }
+
+        /// <summary>
+        /// Average the wallpaper behind the city name (after the dark scrim) and pick the text color
+        /// with the best contrast — the brand blue when it's readable enough, otherwise white / gold / navy.
+        /// </summary>
+        private void UpdateCityColor()
+        {
+            var bg = AverageBackground(pnlCity.Bounds);
+
+            Color brand = Color.FromArgb(77, 184, 255);
+            Color best  = brand;
+            if (Contrast(brand, bg) < 4.5)
+            {
+                Color[] candidates = [Color.White, Color.FromArgb(255, 214, 79), Color.FromArgb(10, 37, 64)];
+                best = candidates.MaxBy(c => Contrast(c, bg));
+            }
+
+            cityColor  = best;
+            cityShadow = Luminance(best) > 0.4 ? Color.FromArgb(170, 0, 0, 0) : Color.FromArgb(150, 255, 255, 255);
+            pnlCity.Invalidate();
+        }
+
+        private Color AverageBackground(Rectangle area)
+        {
+            Color raw = BackColor;
+            if (BackgroundImage is Bitmap bmp)
+            {
+                var rect = Rectangle.Intersect(area, new Rectangle(Point.Empty, bmp.Size));
+                long r = 0, g = 0, b = 0, n = 0;
+                for (int y = rect.Top; y < rect.Bottom; y += 4)
+                    for (int x = rect.Left; x < rect.Right; x += 4)
+                    {
+                        var c = bmp.GetPixel(x, y);
+                        r += c.R; g += c.G; b += c.B; n++;
+                    }
+                if (n > 0) raw = Color.FromArgb((int)(r / n), (int)(g / n), (int)(b / n));
+            }
+            // OnPaint lays a black scrim (alpha ScrimAlpha) over everything
+            double keep = 1 - ScrimAlpha / 255.0;
+            return Color.FromArgb((int)(raw.R * keep), (int)(raw.G * keep), (int)(raw.B * keep));
+        }
+
+        private static double Luminance(Color c)
+        {
+            static double Ch(int v) { double s = v / 255.0; return s <= 0.03928 ? s / 12.92 : Math.Pow((s + 0.055) / 1.055, 2.4); }
+            return 0.2126 * Ch(c.R) + 0.7152 * Ch(c.G) + 0.0722 * Ch(c.B);
+        }
+
+        /// <summary>WCAG contrast ratio (1 … 21).</summary>
+        private static double Contrast(Color a, Color b)
+        {
+            double la = Luminance(a), lb = Luminance(b);
+            return (Math.Max(la, lb) + 0.05) / (Math.Min(la, lb) + 0.05);
+        }
 
         private void PaintTemperature(Graphics g, Rectangle r)
         {
@@ -578,9 +826,9 @@ namespace frmweatherwid
             var w = weather;
             string[] lines =
             [
-                $"Humidity: {(w is null ? "--" : $"{w.Humidity:0}%")}",
-                $"Wind: {(w is null ? "--" : $"{w.WindKph:0} km/h")}",
-                $"Feels like: {(w is null ? "--" : $"{w.FeelsLikeC:0}")}°C",
+                $"{L.T("Độ ẩm", "Humidity")}: {(w is null ? "--" : $"{w.Humidity:0}%")}",
+                $"{L.T("Gió", "Wind")}: {(w is null ? "--" : $"{w.WindKph:0} km/h")}",
+                $"{L.T("Cảm giác như", "Feels like")}: {(w is null ? "--" : $"{w.FeelsLikeC:0}")}°C",
             ];
             using var brush = new SolidBrush(Color.LightSeaGreen);
             for (int i = 0; i < lines.Length; i++)
@@ -594,7 +842,7 @@ namespace frmweatherwid
             if (usAqi is { } aqi)
             {
                 (index, var label) = ClassifyAqi(aqi);
-                text = $"Air quality: {aqi}  ({label})";
+                text = L.T($"AQI: {aqi}  ({label})", $"Air quality: {aqi}  ({label})");
             }
 
             var dotColor = index switch
@@ -635,7 +883,7 @@ namespace frmweatherwid
             base.OnPaint(e);
             // Dark scrim so text stays readable on any wallpaper
             e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-            using var scrim = new SolidBrush(Color.FromArgb(110, 0, 0, 0));
+            using var scrim = new SolidBrush(Color.FromArgb(ScrimAlpha, 0, 0, 0));
             using var path  = RoundedPath(ClientRectangle, 14);
             e.Graphics.FillPath(scrim, path);
         }
@@ -668,7 +916,7 @@ namespace frmweatherwid
                 WeatherKind.Clear        => "☀️",
                 WeatherKind.PartlyCloudy => "⛅",
                 WeatherKind.Cloudy       => "☁️",
-                WeatherKind.Fog          => "🌫️",
+                WeatherKind.Fog          => "☁️", // 🌫️ renders as a framed blob in GDI+ → cloud + mist lines below
                 WeatherKind.Drizzle      => "🌦️",
                 WeatherKind.Rain         => "🌧️",
                 WeatherKind.Snow         => "🌨️",
@@ -679,9 +927,34 @@ namespace frmweatherwid
             var bmp = new Bitmap(size.Width, size.Height);
             using var g = Graphics.FromImage(bmp);
             g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
-            using var font = new Font("Segoe UI Emoji", size.Height * 0.52f);
-            g.DrawString(emoji, font, Brushes.White, new RectangleF(0, 0, size.Width, size.Height), CenterFormat);
+            g.SmoothingMode     = SmoothingMode.AntiAlias;
+
+            bool fog = kind == WeatherKind.Fog;
+            var area = fog ? new RectangleF(0, 0, size.Width, size.Height * 0.72f) : new RectangleF(0, 0, size.Width, size.Height);
+            using var font = new Font("Segoe UI Emoji", size.Height * (fog ? 0.42f : 0.52f));
+            g.DrawString(emoji, font, Brushes.White, area, CenterFormat);
+
+            if (fog)
+            {
+                using var pen = new Pen(Color.FromArgb(230, 255, 255, 255), Math.Max(1.5f, size.Height * 0.06f)) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+                for (int i = 0; i < 3; i++)
+                {
+                    float y = size.Height * (0.70f + i * 0.11f), inset = size.Width * (i == 1 ? 0.18f : 0.26f);
+                    g.DrawLine(pen, inset, y, size.Width - inset, y);
+                }
+            }
             return bmp;
+        }
+
+        /// <summary>Small rain-drop glyph (the 💧 emoji has no glyph in Segoe UI and shows as a box).</summary>
+        private static void DrawDrop(Graphics g, Brush brush, float x, float y, float h)
+        {
+            float w = h * 0.7f;
+            using var path = new GraphicsPath();
+            path.AddLine(x + w / 2, y, x + w, y + h * 0.58f);
+            path.AddArc(x, y + h - w, w, w, 0, 180);
+            path.CloseFigure();
+            g.FillPath(brush, path);
         }
 
         private static Bitmap CreatePlaceholderIcon(Size size)
@@ -699,9 +972,9 @@ namespace frmweatherwid
 
         private NotifyIcon CreateTrayIcon()
         {
-            var menu      = new ContextMenuStrip();
-            var mnuToggle = new ToolStripMenuItem("Hiện Widget", null, (_, _) => ToggleWidget());
-            var mnuRefresh = new ToolStripMenuItem("🔄 Cập nhật thời tiết");
+            var menu       = new ContextMenuStrip();
+            var mnuToggle  = new ToolStripMenuItem("", null, (_, _) => ToggleWidget());
+            var mnuRefresh = new ToolStripMenuItem();
             mnuRefresh.Click += async (_, _) =>
             {
                 mnuRefresh.Enabled = false;
@@ -711,28 +984,50 @@ namespace frmweatherwid
 
             // 📍 Location submenu
             var mnuCurrent = new ToolStripMenuItem { Enabled = false };
-            var mnuAuto    = new ToolStripMenuItem("Tự động định vị", null, async (_, _) =>
+            var mnuAuto    = new ToolStripMenuItem("", null, async (_, _) =>
             {
                 locationService.ManualLocation = null;
                 await UpdateWeatherAsync(relocate: true);
             });
-            var mnuPick     = new ToolStripMenuItem("Chọn thành phố…", null, async (_, _) => await PickCityAsync());
-            var mnuLocation = new ToolStripMenuItem("📍 Vị trí");
+            var mnuPick     = new ToolStripMenuItem("", null, async (_, _) => await PickCityAsync());
+            var mnuLocation = new ToolStripMenuItem();
             mnuLocation.DropDownItems.AddRange([mnuCurrent, new ToolStripSeparator(), mnuAuto, mnuPick]);
 
-            var mnuUpdate = new ToolStripMenuItem("⬆ Kiểm tra cập nhật", null, async (_, _) => await CheckForUpdateAsync(manual: true));
-            var mnuAbout  = new ToolStripMenuItem($"Weather Widget v{UpdateService.CurrentVersion.ToString(3)}") { Enabled = false };
+            // 🌐 Language submenu — names in their own language so either is findable
+            var mnuVi       = new ToolStripMenuItem("Tiếng Việt", null, (_, _) => L.Set(AppLanguage.Vietnamese));
+            var mnuEn       = new ToolStripMenuItem("English",    null, (_, _) => L.Set(AppLanguage.English));
+            var mnuLanguage = new ToolStripMenuItem();
+            mnuLanguage.DropDownItems.AddRange([mnuVi, mnuEn]);
 
-            menu.Items.AddRange([mnuToggle, mnuRefresh, mnuLocation, new ToolStripSeparator(),
-                                 mnuAbout, mnuUpdate, new ToolStripSeparator(),
-                                 new ToolStripMenuItem("Thoát", null, (_, _) => Application.Exit())]);
+            var mnuUpdate   = new ToolStripMenuItem("", null, async (_, _) => await CheckForUpdateAsync(manual: true));
+            var mnuWhatsNew = new ToolStripMenuItem("", null, (_, _) => ShowWhatsNew(null));
+            var mnuDonate   = new ToolStripMenuItem("", null, (_, _) => OpenDonatePage());
+            var mnuAbout    = new ToolStripMenuItem($"Weather Widget v{UpdateService.CurrentVersion.ToString(3)}") { Enabled = false };
+            var mnuExit     = new ToolStripMenuItem("", null, (_, _) => Application.Exit());
+
+            menu.Items.AddRange([mnuToggle, mnuRefresh, mnuLocation, mnuLanguage, new ToolStripSeparator(),
+                                 mnuAbout, mnuWhatsNew, mnuUpdate, mnuDonate, new ToolStripSeparator(), mnuExit]);
+
+            // All texts are (re)set right before the menu shows, so a language switch needs nothing else.
             menu.Opening += (_, _) =>
             {
-                mnuToggle.Text  = Visible ? "Ẩn Widget" : "Hiện Widget";
-                mnuCurrent.Text = $"Hiện tại: {location.Name} ({SourceLabel(location.Source)})";
-                mnuAuto.Checked = location.Source != LocationSource.Manual;
-                mnuUpdate.Text  = pendingUpdate is { } p ? $"⬆ Cài bản {p.Info.Tag} ngay" : "⬆ Kiểm tra cập nhật";
+                mnuToggle.Text    = Visible ? L.T("Ẩn Widget", "Hide widget") : L.T("Hiện Widget", "Show widget");
+                mnuRefresh.Text   = L.T("🔄 Cập nhật thời tiết", "🔄 Refresh weather");
+                mnuLocation.Text  = L.T("📍 Vị trí", "📍 Location");
+                mnuCurrent.Text   = L.T($"Hiện tại: {location.Name} ({SourceLabel(location.Source)})",
+                                        $"Current: {location.Name} ({SourceLabel(location.Source)})");
+                mnuAuto.Text      = L.T("Tự động định vị", "Detect automatically");
+                mnuAuto.Checked   = location.Source != LocationSource.Manual;
+                mnuPick.Text      = L.T("Chọn thành phố…", "Choose city…");
+                mnuLanguage.Text  = L.T("🌐 Ngôn ngữ", "🌐 Language");
+                mnuVi.Checked     = L.IsVi;
+                mnuEn.Checked     = !L.IsVi;
+                mnuUpdate.Text    = pendingUpdate is { } p ? L.T($"⬆ Cài bản {p.Info.Tag} ngay", $"⬆ Install {p.Info.Tag} now")
+                                                           : L.T("⬆ Kiểm tra cập nhật", "⬆ Check for updates");
                 mnuUpdate.Enabled = !isCheckingUpdate;
+                mnuWhatsNew.Text  = L.T("📝 Có gì mới", "📝 What's new");
+                mnuDonate.Text    = L.T("♥ Ủng hộ tác giả", "♥ Donate");
+                mnuExit.Text      = L.T("Thoát", "Exit");
             };
 
             var icon = new NotifyIcon { Text = "Weather Widget", ContextMenuStrip = menu, Visible = true };
@@ -773,7 +1068,10 @@ namespace frmweatherwid
 
             var tip = w is null
                 ? $"{location.Name}: --"
-                : $"{location.Name}: {w.TempC:0.#}°C\nHumidity: {w.Humidity:0}%\nWind: {w.WindKph:0} km/h\nFeels like: {w.FeelsLikeC:0}°C";
+                : $"{location.Name}: {w.TempC:0.#}°C\n" +
+                  $"{L.T("Độ ẩm", "Humidity")}: {w.Humidity:0}%\n" +
+                  $"{L.T("Gió", "Wind")}: {w.WindKph:0} km/h\n" +
+                  $"{L.T("Cảm giác như", "Feels like")}: {w.FeelsLikeC:0}°C";
             if (usAqi is { } aqi) tip += $"\nAQI: {aqi} ({ClassifyAqi(aqi).Label})";
             trayIcon.Text = tip.Length > 127 ? tip[..127] : tip;
         }
@@ -809,7 +1107,7 @@ namespace frmweatherwid
                 PruneCache(cacheDir, TimeSpan.FromDays(14));
 
                 var sources = await Task.WhenAll(FetchBingUrlsAsync(), FetchWallhavenUrlsAsync());
-                var target  = ClientSize;
+                var target  = new Size(FormWidth, ExpandedHeight); // covers the forecast area too
                 var loaded  = await Task.WhenAll(sources.SelectMany(s => s)
                     .Select(e => LoadScaledImageAsync(e.Url, Path.Combine(cacheDir, e.FileName), target)));
 
@@ -821,7 +1119,7 @@ namespace frmweatherwid
                 }
                 if (bitmaps.Count == 0) return;
 
-                Random.Shared.Shuffle(System.Runtime.InteropServices.CollectionsMarshal.AsSpan(bitmaps));
+                Random.Shared.Shuffle(CollectionsMarshal.AsSpan(bitmaps));
 
                 BackgroundImage = null;
                 foreach (var old in wallpapers) old.Dispose();
@@ -842,6 +1140,7 @@ namespace frmweatherwid
             if (wallpapers.Count == 0) return;
             wallpaperIndex = (wallpaperIndex + 1) % wallpapers.Count;
             BackgroundImage = wallpapers[wallpaperIndex]; // owned by the pool — don't dispose here
+            UpdateCityColor();
         }
 
         /// <summary>Loads from cache or downloads, then scales/crops to <paramref name="target"/> (cover) to keep memory small.</summary>
@@ -974,7 +1273,7 @@ namespace frmweatherwid
         {
             try
             {
-                // ZenQuotes — free, no key, 50 quotes per call
+                // ZenQuotes — free, no key, 50 quotes per call (English only)
                 using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
                 await using var stream = await Http.GetStreamAsync("https://zenquotes.io/api/quotes", cts.Token);
                 using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cts.Token);

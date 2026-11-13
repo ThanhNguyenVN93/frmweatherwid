@@ -16,7 +16,7 @@ namespace frmweatherwid
         {
             this.locationService = locationService;
 
-            Text            = "Chọn thành phố";
+            Text            = L.T("Chọn thành phố", "Choose city");
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox     = MinimizeBox = false;
             StartPosition   = FormStartPosition.CenterScreen;
@@ -26,12 +26,12 @@ namespace frmweatherwid
             Padding         = new Padding(12);
             try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { /* keep default */ }
 
-            txtQuery   = new TextBox { Bounds = new Rectangle(12, 12, 300, 27), PlaceholderText = "VD: Da Nang, Ho Chi Minh, Tokyo…" };
-            btnSearch  = new Button  { Bounds = new Rectangle(318, 11, 90, 29), Text = "Tìm" };
-            lblInfo    = new Label   { Bounds = new Rectangle(12, 46, 396, 20), ForeColor = SystemColors.GrayText, Text = "Nhập tên thành phố rồi bấm Tìm (Enter)." };
+            txtQuery   = new TextBox { Bounds = new Rectangle(12, 12, 300, 27), PlaceholderText = L.T("VD: Đà Nẵng, Hồ Chí Minh, Tokyo…", "e.g. Da Nang, Ho Chi Minh, Tokyo…") };
+            btnSearch  = new Button  { Bounds = new Rectangle(318, 11, 90, 29), Text = L.T("Tìm", "Search") };
+            lblInfo    = new Label   { Bounds = new Rectangle(12, 46, 396, 20), ForeColor = SystemColors.GrayText, Text = L.T("Nhập tên thành phố rồi bấm Tìm (Enter).", "Type a city name and press Search (Enter).") };
             lstResults = new ListBox { Bounds = new Rectangle(12, 70, 396, 210), IntegralHeight = false };
-            btnOk      = new Button  { Bounds = new Rectangle(222, 290, 90, 29), Text = "Chọn", DialogResult = DialogResult.OK, Enabled = false };
-            var btnCancel = new Button { Bounds = new Rectangle(318, 290, 90, 29), Text = "Huỷ", DialogResult = DialogResult.Cancel };
+            btnOk      = new Button  { Bounds = new Rectangle(222, 290, 90, 29), Text = L.T("Chọn", "Select"), DialogResult = DialogResult.OK, Enabled = false };
+            var btnCancel = new Button { Bounds = new Rectangle(318, 290, 90, 29), Text = L.T("Huỷ", "Cancel"), DialogResult = DialogResult.Cancel };
 
             Controls.AddRange([txtQuery, btnSearch, lblInfo, lstResults, btnOk, btnCancel]);
             AcceptButton = btnSearch;
@@ -60,7 +60,7 @@ namespace frmweatherwid
             using var cts = searchCts = new CancellationTokenSource();
 
             btnSearch.Enabled = false;
-            lblInfo.Text      = "Đang tìm…";
+            lblInfo.Text      = L.T("Đang tìm…", "Searching…");
             lstResults.Items.Clear();
             try
             {
@@ -69,8 +69,8 @@ namespace frmweatherwid
 
                 lstResults.Items.AddRange([.. results]);
                 lblInfo.Text = results.Count == 0
-                    ? "Không tìm thấy (hoặc không có mạng). Thử tên khác, có thể gõ không dấu."
-                    : "Chọn một kết quả rồi bấm Chọn (hoặc nháy đúp).";
+                    ? L.T("Không tìm thấy (hoặc không có mạng). Thử tên khác, có thể gõ không dấu.", "Nothing found (or offline). Try another name.")
+                    : L.T("Chọn một kết quả rồi bấm Chọn (hoặc nháy đúp).", "Pick a result and press Select (or double-click).");
                 if (results.Count > 0)
                 {
                     lstResults.SelectedIndex = 0;

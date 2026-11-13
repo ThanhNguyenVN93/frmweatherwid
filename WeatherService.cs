@@ -5,8 +5,11 @@ namespace frmweatherwid
 {
     internal enum WeatherKind { Unknown, Clear, PartlyCloudy, Cloudy, Fog, Drizzle, Rain, Snow, Thunder }
 
+    internal sealed record DailyForecast(DateOnly Date, double MinC, double MaxC, WeatherKind Kind, int? RainChance);
+
     internal sealed record WeatherData(
-        double TempC, double Humidity, double WindKph, double FeelsLikeC, WeatherKind Kind, string Source);
+        double TempC, double Humidity, double WindKph, double FeelsLikeC, WeatherKind Kind, string Source,
+        IReadOnlyList<DailyForecast> Daily);
 
     /// <summary>
     /// Current weather with automatic fallback (all free, no API key):
@@ -19,6 +22,7 @@ namespace frmweatherwid
     {
         private static readonly TimeSpan ProviderTimeout = TimeSpan.FromSeconds(8);
         private static readonly CultureInfo Inv = CultureInfo.InvariantCulture;
+        public const int ForecastDays = 6; // today + 5
         private static readonly string[] MetSummaryBlocks = ["next_1_hours", "next_6_hours", "next_12_hours"];
 
         private static readonly TimeSpan FailureCooldown = TimeSpan.FromMinutes(15);
@@ -93,7 +97,8 @@ namespace frmweatherwid
         {
             var url = $"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}" +
                       "&current=temperature_2m,relative_humidity_2m,wind_speed_10m,apparent_temperature,weather_code" +
-                      "&wind_speed_unit=kmh";
+                      "&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max" +
+                      $"&timezone=auto&forecast_days={ForecastDays}&wind_speed_unit=kmh";
             using var doc = await GetJsonAsync(url, ct);
             var cur = doc.RootElement.GetProperty("current");
             return new WeatherData(
@@ -102,7 +107,30 @@ namespace frmweatherwid
                 cur.GetProperty("wind_speed_10m").GetDouble(),
                 cur.GetProperty("apparent_temperature").GetDouble(),
                 FromWmo(cur.GetProperty("weather_code").GetInt32()),
-                "Open-Meteo");
+                "Open-Meteo",
+                SafeDaily(() => ParseOpenMeteoDaily(doc.RootElement.GetProperty("daily"))));
+        }
+
+        private static List<DailyForecast> ParseOpenMeteoDaily(JsonElement daily)
+        {
+            var dates = daily.GetProperty("time");
+            var codes = daily.GetProperty("weather_code");
+            var max   = daily.GetProperty("temperature_2m_max");
+            var min   = daily.GetProperty("temperature_2m_min");
+            daily.TryGetProperty("precipitation_probability_max", out var rain);
+
+            var list = new List<DailyForecast>();
+            for (int i = 0; i < dates.GetArrayLength(); i++)
+            {
+                if (max[i].ValueKind != JsonValueKind.Number || min[i].ValueKind != JsonValueKind.Number) continue;
+                int? chance = rain.ValueKind == JsonValueKind.Array && rain[i].ValueKind == JsonValueKind.Number
+                    ? (int)Math.Round(rain[i].GetDouble()) : null;
+                list.Add(new DailyForecast(DateOnly.Parse(dates[i].GetString()!, Inv),
+                    min[i].GetDouble(), max[i].GetDouble(),
+                    codes[i].ValueKind == JsonValueKind.Number ? FromWmo(codes[i].GetInt32()) : WeatherKind.Unknown,
+                    chance));
+            }
+            return list;
         }
 
         private async Task<WeatherData> FetchMetNorwayAsync(string lat, string lon, CancellationToken ct)
@@ -110,27 +138,54 @@ namespace frmweatherwid
             // Docs: https://api.met.no/weatherapi/locationforecast/2.0/documentation (requires a User-Agent)
             var url = $"https://api.met.no/weatherapi/locationforecast/2.0/compact?lat={lat}&lon={lon}";
             using var doc = await GetJsonAsync(url, ct);
-            var now     = doc.RootElement.GetProperty("properties").GetProperty("timeseries")[0].GetProperty("data");
+            var series  = doc.RootElement.GetProperty("properties").GetProperty("timeseries");
+            var now     = series[0].GetProperty("data");
             var details = now.GetProperty("instant").GetProperty("details");
 
             double temp  = details.GetProperty("air_temperature").GetDouble();
             double rh    = details.GetProperty("relative_humidity").GetDouble();
             double windM = details.GetProperty("wind_speed").GetDouble(); // m/s
 
-            string symbol = "";
+            return new WeatherData(temp, rh, windM * 3.6, ApparentTemperature(temp, rh, windM),
+                                   FromMetSymbol(MetSymbol(now)), "MET Norway",
+                                   SafeDaily(() => ParseMetDaily(series)));
+        }
+
+        private static string MetSymbol(JsonElement data)
+        {
             foreach (var key in MetSummaryBlocks)
             {
-                if (now.TryGetProperty(key, out var block) &&
+                if (data.TryGetProperty(key, out var block) &&
                     block.TryGetProperty("summary", out var s) &&
                     s.TryGetProperty("symbol_code", out var code))
-                {
-                    symbol = code.GetString() ?? "";
-                    break;
-                }
+                    return code.GetString() ?? "";
             }
+            return "";
+        }
 
-            return new WeatherData(temp, rh, windM * 3.6, ApparentTemperature(temp, rh, windM),
-                                   FromMetSymbol(symbol), "MET Norway");
+        /// <summary>MET gives a UTC time series — group it into local days: min/max temp, symbol nearest noon.</summary>
+        private static List<DailyForecast> ParseMetDaily(JsonElement series)
+        {
+            var days = new SortedDictionary<DateOnly, (double Min, double Max, string Symbol, double NoonDist)>();
+            foreach (var entry in series.EnumerateArray())
+            {
+                var local = DateTime.Parse(entry.GetProperty("time").GetString()!, Inv,
+                                           DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal).ToLocalTime();
+                var data  = entry.GetProperty("data");
+                double t  = data.GetProperty("instant").GetProperty("details").GetProperty("air_temperature").GetDouble();
+                var day   = DateOnly.FromDateTime(local);
+                double noonDist = Math.Abs(local.Hour + local.Minute / 60.0 - 12);
+                string sym = MetSymbol(data);
+
+                if (!days.TryGetValue(day, out var d)) d = (t, t, "", double.MaxValue);
+                d.Min = Math.Min(d.Min, t);
+                d.Max = Math.Max(d.Max, t);
+                if (sym.Length > 0 && noonDist < d.NoonDist) (d.Symbol, d.NoonDist) = (sym, noonDist);
+                days[day] = d;
+            }
+            return days.Take(ForecastDays)
+                       .Select(kv => new DailyForecast(kv.Key, kv.Value.Min, kv.Value.Max, FromMetSymbol(kv.Value.Symbol), null))
+                       .ToList();
         }
 
         private async Task<WeatherData> FetchWttrAsync(string lat, string lon, CancellationToken ct)
@@ -139,10 +194,29 @@ namespace frmweatherwid
             using var doc = await GetJsonAsync(url, ct);
             var cur = doc.RootElement.GetProperty("current_condition")[0];
 
-            double Num(string name) => double.Parse(cur.GetProperty(name).GetString()!, Inv);
+            return new WeatherData(Num(cur, "temp_C"), Num(cur, "humidity"), Num(cur, "windspeedKmph"), Num(cur, "FeelsLikeC"),
+                                   FromWwo((int)Num(cur, "weatherCode")), "wttr.in",
+                                   SafeDaily(() => ParseWttrDaily(doc.RootElement.GetProperty("weather"))));
+        }
 
-            return new WeatherData(Num("temp_C"), Num("humidity"), Num("windspeedKmph"), Num("FeelsLikeC"),
-                                   FromWwo((int)Num("weatherCode")), "wttr.in");
+        /// <summary>wttr.in: 3 days; condition taken from the noon slot (hourly[4] = 12:00).</summary>
+        private static List<DailyForecast> ParseWttrDaily(JsonElement weather) =>
+            weather.EnumerateArray().Select(day =>
+            {
+                var hourly = day.GetProperty("hourly");
+                var noon   = hourly[Math.Min(4, hourly.GetArrayLength() - 1)];
+                int rain   = hourly.EnumerateArray().Max(h => (int)Num(h, "chanceofrain"));
+                return new DailyForecast(DateOnly.Parse(day.GetProperty("date").GetString()!, Inv),
+                    Num(day, "mintempC"), Num(day, "maxtempC"), FromWwo((int)Num(noon, "weatherCode")), rain);
+            }).ToList();
+
+        private static double Num(JsonElement el, string name) => double.Parse(el.GetProperty(name).GetString()!, Inv);
+
+        /// <summary>Forecast is a bonus — a parsing problem must never cost us the current weather.</summary>
+        private static IReadOnlyList<DailyForecast> SafeDaily(Func<List<DailyForecast>> parse)
+        {
+            try { return parse(); }
+            catch { return []; }
         }
 
         private async Task<JsonDocument> GetJsonAsync(string url, CancellationToken ct)

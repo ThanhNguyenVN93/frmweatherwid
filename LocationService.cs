@@ -34,7 +34,7 @@ namespace frmweatherwid
     /// </summary>
     internal sealed class LocationService(HttpClient http)
     {
-        public static readonly GeoLocation DefaultLocation = new(21.0245, 105.8412, "Hanoi", LocationSource.Default);
+        public static GeoLocation DefaultLocation => new(21.0245, 105.8412, L.T("Hà Nội", "Hanoi"), LocationSource.Default);
 
         private const string SettingsKeyPath = @"Software\FrmWeatherWidget";
         private static readonly TimeSpan HttpTimeout = TimeSpan.FromSeconds(6);
@@ -129,7 +129,7 @@ namespace frmweatherwid
             try
             {
                 using var doc = await GetJsonAsync(
-                    $"https://api.bigdatacloud.net/data/reverse-geocode-client?latitude={la}&longitude={lo}&localityLanguage=en", ct);
+                    $"https://api.bigdatacloud.net/data/reverse-geocode-client?latitude={la}&longitude={lo}&localityLanguage={L.Code}", ct);
                 var r = doc.RootElement;
                 foreach (var key in (string[])["city", "locality", "principalSubdivision"])
                     if (r.TryGetProperty(key, out var v) && v.GetString() is { Length: > 0 } s) return s;
@@ -139,7 +139,7 @@ namespace frmweatherwid
             try
             {
                 using var doc = await GetJsonAsync(
-                    $"https://nominatim.openstreetmap.org/reverse?lat={la}&lon={lo}&format=jsonv2&zoom=10&accept-language=en", ct);
+                    $"https://nominatim.openstreetmap.org/reverse?lat={la}&lon={lo}&format=jsonv2&zoom=10&accept-language={L.Code}", ct);
                 if (doc.RootElement.TryGetProperty("address", out var a))
                     foreach (var key in (string[])["city", "town", "village", "county", "state"])
                         if (a.TryGetProperty(key, out var v) && v.GetString() is { Length: > 0 } s) return s;
@@ -156,7 +156,7 @@ namespace frmweatherwid
             try
             {
                 using var doc = await GetJsonAsync(
-                    $"https://geocoding-api.open-meteo.com/v1/search?name={q}&count=10&language=en&format=json", ct);
+                    $"https://geocoding-api.open-meteo.com/v1/search?name={q}&count=10&language={L.Code}&format=json", ct);
                 if (doc.RootElement.TryGetProperty("results", out var results))
                 {
                     var list = results.EnumerateArray().Select(el => new CityResult(
@@ -173,7 +173,7 @@ namespace frmweatherwid
             try
             {
                 using var doc = await GetJsonAsync(
-                    $"https://nominatim.openstreetmap.org/search?q={q}&format=jsonv2&limit=10&accept-language=en", ct);
+                    $"https://nominatim.openstreetmap.org/search?q={q}&format=jsonv2&limit=10&accept-language={L.Code}", ct);
                 return doc.RootElement.EnumerateArray().Select(el =>
                 {
                     var display = Str(el, "display_name");

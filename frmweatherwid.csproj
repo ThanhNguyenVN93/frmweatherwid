@@ -26,9 +26,9 @@
     <Copyright>Copyright © 2026 Nguyen Thanh</Copyright>
     <NeutralLanguage>vi-VN</NeutralLanguage>
     <RepositoryUrl>https://github.com/ThanhNguyenVN93/frmweatherwid</RepositoryUrl>
-    <Version>1.2.0</Version>
-    <FileVersion>1.2.0.0</FileVersion>
-    <!-- keep "1.2.0" instead of "1.2.0+<git hash>" in Product version -->
+    <Version>1.2.1</Version>
+    <FileVersion>1.2.1.0</FileVersion>
+    <!-- keep "1.2.1" instead of "1.2.1+<git hash>" in Product version -->
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
   </PropertyGroup>
 
