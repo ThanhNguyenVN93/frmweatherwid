@@ -13,6 +13,13 @@ namespace frmweatherwid
 
         public static readonly Entry[] Entries =
         [
+            new(new Version(1, 2, 4),
+                [
+                    "Có thông báo khi app đang tự tải bản cập nhật, không còn im lặng rồi bất ngờ khởi động lại.",
+                ],
+                [
+                    "A notification now shows while an update is downloading, instead of a silent surprise restart.",
+                ]),
             new(new Version(1, 2, 3),
                 [
                     "Tự cập nhật an toàn hơn: bản mới lỗi khi khởi động thì tự quay lại bản cũ.",

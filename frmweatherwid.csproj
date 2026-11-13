@@ -27,9 +27,9 @@
     <NeutralLanguage>vi-VN</NeutralLanguage>
     <RepositoryUrl>https://github.com/ThanhNguyenVN93/frmweatherwid</RepositoryUrl>
     <PackageLicenseExpression>GPL-3.0-or-later</PackageLicenseExpression>
-    <Version>1.2.3</Version>
-    <FileVersion>1.2.3.0</FileVersion>
-    <!-- keep "1.2.3" instead of "1.2.3+<git hash>" in Product version -->
+    <Version>1.2.4</Version>
+    <FileVersion>1.2.4.0</FileVersion>
+    <!-- keep "1.2.4" instead of "1.2.4+<git hash>" in Product version -->
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
   </PropertyGroup>
 

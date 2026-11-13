@@ -689,7 +689,11 @@ namespace frmweatherwid
                     return;
                 }
                 AppLog.Info($"Update {info.Tag} found, downloading");
-                if (manual) Notify(L.T($"Đang tải bản {info.Tag}…", $"Downloading {info.Tag}…"), ToolTipIcon.Info);
+                // Also for the silent 6-hourly check: otherwise the app looks idle until it suddenly restarts.
+                bool waitsForHide = !manual && widgets.Any(w => w.Visible);
+                Notify(L.T($"⬆ Đang tải bản {info.Tag}… App sẽ tự khởi động lại để cập nhật" + (waitsForHide ? " khi bạn ẩn widget." : "."),
+                           $"⬆ Downloading {info.Tag}… The app will restart to update" + (waitsForHide ? " once you hide the widget." : ".")),
+                       ToolTipIcon.Info);
 
                 var file = await updateService.DownloadAsync(info);
                 pendingUpdate = (file, info);
