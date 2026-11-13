@@ -59,7 +59,7 @@ jobs:
       # ---- Code signing (only once SignPath is set up; releases only) ----
       - name: Sign with SignPath
         if: env.IS_RELEASE == 'true' && env.SIGNING_ENABLED == 'true'
-        uses: signpath/github-action-submit-signing-request@v1
+        uses: signpath/github-action-submit-signing-request@v3
         with:
           api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
           organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
