@@ -13,6 +13,15 @@ namespace frmweatherwid
 
         public static readonly Entry[] Entries =
         [
+            new(new Version(1, 2, 5),
+                [
+                    "Repo GitHub đổi tên thành weather-widget; mọi liên kết trong app đã cập nhật.",
+                    "Có thể cài bằng winget: winget install ThanhNguyenVN93.WeatherWidget (sau khi được duyệt).",
+                ],
+                [
+                    "The GitHub repo is now called weather-widget; all links in the app were updated.",
+                    "Installable with winget: winget install ThanhNguyenVN93.WeatherWidget (once approved).",
+                ]),
             new(new Version(1, 2, 4),
                 [
                     "Có thông báo khi app đang tự tải bản cập nhật, không còn im lặng rồi bất ngờ khởi động lại.",
