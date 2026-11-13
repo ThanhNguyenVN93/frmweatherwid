@@ -24,3 +24,10 @@ Widget thời tiết nhỏ cho Windows (WinForms, .NET 10), sống ở khay hệ
 ```bash
 dotnet build -c Release
 ```
+
+Một file exe tự chạy (không cần cài .NET):
+```bash
+dotnet publish -c Release -r win-x64 -o publish
+```
+
+Bản build sẵn: xem mục **Releases** của repo.

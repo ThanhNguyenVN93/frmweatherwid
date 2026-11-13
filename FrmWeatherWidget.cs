@@ -19,6 +19,7 @@ namespace frmweatherwid
 
         private const int RefreshMs         = 30 * 60_000; // normal refresh
         private const int RetryMs           = 5 * 60_000;  // after every provider failed
+        private const int ResumeDelayMs     = 15_000;      // after waking from sleep
         private const int WallpaperRotateMs = 60_000;
         private const int QuoteRotateMs     = 15_000;
 
@@ -160,6 +161,8 @@ namespace frmweatherwid
             trayIcon = CreateTrayIcon();
             UpdateTray();
 
+            SystemEvents.PowerModeChanged += OnPowerModeChanged;
+
             // Load doesn't fire because the form starts hidden — use HandleCreated instead.
             HandleCreated += async (_, _) =>
             {
@@ -254,6 +257,7 @@ namespace frmweatherwid
         {
             if (disposing)
             {
+                SystemEvents.PowerModeChanged -= OnPowerModeChanged; // static event — must unhook
                 refreshTimer.Dispose();
                 loadingTimer.Dispose();
                 wallpaperTimer.Dispose();
@@ -269,6 +273,24 @@ namespace frmweatherwid
                 wallpapers.Clear();
             }
             base.Dispose(disposing);
+        }
+
+        /// <summary>After sleep/hibernate the data is stale: refresh shortly after resume (network needs a moment).</summary>
+        private void OnPowerModeChanged(object? sender, PowerModeChangedEventArgs e)
+        {
+            if (e.Mode != PowerModes.Resume) return;
+            try
+            {
+                if (!IsHandleCreated || IsDisposed) return;
+                BeginInvoke(() =>
+                {
+                    if (isUpdating || IsDisposed) return;
+                    refreshTimer.Stop();
+                    refreshTimer.Interval = ResumeDelayMs;
+                    refreshTimer.Start();
+                });
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or ObjectDisposedException) { }
         }
 
         // ================================================================== weather
@@ -300,6 +322,11 @@ namespace frmweatherwid
                     pictureWeather.Image = CreateWeatherIcon(data.Kind, pictureWeather.Size);
                     oldIcon?.Dispose();
                 }
+            }
+            catch
+            {
+                // Called from async-void handlers: an escaping exception would crash the app.
+                lastFetchFailed = true;
             }
             finally
             {

@@ -25,8 +25,15 @@ namespace frmweatherwid
 
             var registration = ThreadPool.RegisterWaitForSingleObject(showEvent, (_, _) =>
             {
-                if (form.IsHandleCreated && !form.IsDisposed)
-                    form.BeginInvoke(form.ShowWidget);
+                try
+                {
+                    if (form.IsHandleCreated && !form.IsDisposed)
+                        form.BeginInvoke(form.ShowWidget);
+                }
+                catch (Exception ex) when (ex is InvalidOperationException or ObjectDisposedException)
+                {
+                    // form is closing — ignore (an unhandled exception here would kill the process)
+                }
             }, null, Timeout.Infinite, executeOnlyOnce: false);
 
             try
