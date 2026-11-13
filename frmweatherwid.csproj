@@ -2,7 +2,8 @@
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net10.0-windows</TargetFramework>
+    <!-- Windows 10 SDK target: needed for Windows.Devices.Geolocation (Windows Location API) -->
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
     <Nullable>enable</Nullable>
     <UseWindowsForms>true</UseWindowsForms>
     <ImplicitUsings>enable</ImplicitUsings>
@@ -10,7 +11,7 @@
     <!-- Layout is in fixed pixels: let Windows scale the whole window on 125%/150% displays
          instead of growing only the fonts (which made text overflow its panels). -->
     <ApplicationHighDpiMode>DpiUnawareGdiScaled</ApplicationHighDpiMode>
-    <Version>1.0.0</Version>
+    <Version>1.1.0</Version>
   </PropertyGroup>
 
   <!-- dotnet publish -c Release -r win-x64 → one self-contained exe (no .NET install needed) -->

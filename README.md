@@ -1,9 +1,16 @@
-# Weather Widget (Hanoi)
+# Weather Widget
 
-Widget thời tiết nhỏ cho Windows (WinForms, .NET 10), sống ở khay hệ thống.
+Widget thời tiết nhỏ cho Windows 10 (2004+) / 11 (WinForms, .NET 10), sống ở khay hệ thống.
 
 ## Tính năng
-- Nhiệt độ, độ ẩm, gió, cảm giác như, AQI (US) cho Hà Nội (trạm Láng, 21.0245, 105.8412).
+- Nhiệt độ, độ ẩm, gió, cảm giác như, AQI (US) tại vị trí hiện tại.
+- **Vị trí 3 lớp** — `LocationService.cs`:
+  1. **Chọn thủ công**: khay → 📍 Vị trí → *Chọn thành phố…* (tìm qua Open-Meteo Geocoding → Nominatim). Khi đã chọn, app không tự định vị nữa; bấm *Tự động định vị* để quay lại.
+  2. **Định vị Windows** (Wi-Fi/GPS): cần bật *Settings → Privacy & security → Location* và *Let desktop apps access your location*.
+  3. **Theo IP** (ipwho.is → ipinfo.io): cấp thành phố; khi bật VPN sẽ ra vị trí máy chủ VPN.
+
+  Không lớp nào được thì dùng vị trí tự động lần trước, cuối cùng là Hà Nội. Định vị lại khi khởi động, khi máy thức dậy từ Sleep và khi bấm *Cập nhật thời tiết*.
+  Tên thành phố lấy qua BigDataCloud → Nominatim.
 - **Nguồn thời tiết có fallback** (đều miễn phí, không cần API key) — `WeatherService.cs`:
   1. [Open-Meteo](https://open-meteo.com) — nguồn chính
   2. [MET Norway](https://api.met.no) — dự phòng 1 (cảm giác như tính theo công thức BoM)

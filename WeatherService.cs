@@ -21,19 +21,15 @@ namespace frmweatherwid
         private static readonly CultureInfo Inv = CultureInfo.InvariantCulture;
         private static readonly string[] MetSummaryBlocks = ["next_1_hours", "next_6_hours", "next_12_hours"];
 
-        private readonly HttpClient http;
-        private readonly string lat;
-        private readonly string lon;
         private static readonly TimeSpan FailureCooldown = TimeSpan.FromMinutes(15);
 
-        private readonly (string Name, Func<CancellationToken, Task<WeatherData>> Fetch)[] providers;
+        private readonly HttpClient http;
+        private readonly (string Name, Func<string, string, CancellationToken, Task<WeatherData>> Fetch)[] providers;
         private readonly DateTime[] cooldownUntil;
 
-        public WeatherService(HttpClient http, double latitude, double longitude)
+        public WeatherService(HttpClient http)
         {
             this.http = http;
-            lat = latitude.ToString("0.####", Inv);
-            lon = longitude.ToString("0.####", Inv);
             providers =
             [
                 ("Open-Meteo", FetchOpenMeteoAsync),
@@ -44,8 +40,10 @@ namespace frmweatherwid
         }
 
         /// <summary>Returns data from the first provider that answers, or null if all fail.</summary>
-        public async Task<WeatherData?> GetCurrentAsync(CancellationToken ct = default)
+        public async Task<WeatherData?> GetCurrentAsync(double latitude, double longitude, CancellationToken ct = default)
         {
+            var (lat, lon) = (Coord(latitude), Coord(longitude));
+
             // Providers that failed recently are skipped (unless every one is cooling down).
             var now   = DateTime.UtcNow;
             var order = Enumerable.Range(0, providers.Length).Where(i => cooldownUntil[i] <= now).ToList();
@@ -57,7 +55,7 @@ namespace frmweatherwid
                 {
                     using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                     cts.CancelAfter(ProviderTimeout);
-                    var data = await providers[i].Fetch(cts.Token);
+                    var data = await providers[i].Fetch(lat, lon, cts.Token);
                     cooldownUntil[i] = DateTime.MinValue;
                     return data;
                 }
@@ -70,13 +68,13 @@ namespace frmweatherwid
         }
 
         /// <summary>US AQI (0-500) from Open-Meteo air-quality, or null. Never throws.</summary>
-        public async Task<int?> GetUsAqiAsync(CancellationToken ct = default)
+        public async Task<int?> GetUsAqiAsync(double latitude, double longitude, CancellationToken ct = default)
         {
             try
             {
                 using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 cts.CancelAfter(ProviderTimeout);
-                var url = $"https://air-quality-api.open-meteo.com/v1/air-quality?latitude={lat}&longitude={lon}&current=us_aqi";
+                var url = $"https://air-quality-api.open-meteo.com/v1/air-quality?latitude={Coord(latitude)}&longitude={Coord(longitude)}&current=us_aqi";
                 using var doc = await GetJsonAsync(url, cts.Token);
                 var v = doc.RootElement.GetProperty("current").GetProperty("us_aqi");
                 return v.ValueKind == JsonValueKind.Number ? (int)Math.Round(v.GetDouble()) : null;
@@ -87,9 +85,11 @@ namespace frmweatherwid
             }
         }
 
+        private static string Coord(double v) => v.ToString("0.####", Inv);
+
         // ---------------------------------------------------------------- providers
 
-        private async Task<WeatherData> FetchOpenMeteoAsync(CancellationToken ct)
+        private async Task<WeatherData> FetchOpenMeteoAsync(string lat, string lon, CancellationToken ct)
         {
             var url = $"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}" +
                       "&current=temperature_2m,relative_humidity_2m,wind_speed_10m,apparent_temperature,weather_code" +
@@ -105,7 +105,7 @@ namespace frmweatherwid
                 "Open-Meteo");
         }
 
-        private async Task<WeatherData> FetchMetNorwayAsync(CancellationToken ct)
+        private async Task<WeatherData> FetchMetNorwayAsync(string lat, string lon, CancellationToken ct)
         {
             // Docs: https://api.met.no/weatherapi/locationforecast/2.0/documentation (requires a User-Agent)
             var url = $"https://api.met.no/weatherapi/locationforecast/2.0/compact?lat={lat}&lon={lon}";
@@ -133,7 +133,7 @@ namespace frmweatherwid
                                    FromMetSymbol(symbol), "MET Norway");
         }
 
-        private async Task<WeatherData> FetchWttrAsync(CancellationToken ct)
+        private async Task<WeatherData> FetchWttrAsync(string lat, string lon, CancellationToken ct)
         {
             var url = $"https://wttr.in/{lat},{lon}?format=j1";
             using var doc = await GetJsonAsync(url, ct);

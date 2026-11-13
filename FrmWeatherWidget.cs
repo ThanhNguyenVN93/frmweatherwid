@@ -13,9 +13,6 @@ namespace frmweatherwid
         private const string AppName         = "FrmWeatherWidget";
         private const string RunKeyPath      = @"Software\Microsoft\Windows\CurrentVersion\Run";
         private const string SettingsKeyPath = @"Software\FrmWeatherWidget";
-        private const string CityDisplay     = "Hanoi";
-        private const double Latitude        = 21.0245;  // Láng — trạm khí tượng chuẩn Hà Nội
-        private const double Longitude       = 105.8412;
 
         private const int RefreshMs         = 30 * 60_000; // normal refresh
         private const int RetryMs           = 5 * 60_000;  // after every provider failed
@@ -26,7 +23,6 @@ namespace frmweatherwid
         // ------------------------------------------------------------------ shared resources
         private static readonly HttpClient Http = CreateHttpClient();
 
-        private static readonly Font FontCity    = new("Segoe UI", 28f,  FontStyle.Bold);
         private static readonly Font FontTemp    = new("Segoe UI", 24f,  FontStyle.Bold);
         private static readonly Font FontStats   = new("Segoe UI", 10f,  FontStyle.Bold);
         private static readonly Font FontAqi     = new("Segoe UI", 9.5f, FontStyle.Bold);
@@ -38,9 +34,13 @@ namespace frmweatherwid
         private static readonly StringFormat CenterFormat = new() { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
         private static readonly StringFormat QuoteFormat  = new() { Trimming = StringTrimming.EllipsisWord };
 
-        private readonly WeatherService weatherService = new(Http, Latitude, Longitude);
+        private readonly WeatherService weatherService   = new(Http);
+        private readonly LocationService locationService = new(Http);
+        private GeoLocation location;
 
         // ------------------------------------------------------------------ controls
+        private readonly Label lblCity;
+        private Font? cityFont; // sized to fit the current city name
         private readonly PictureBox pictureWeather;
         private readonly Panel pnlTemperature, pnlStats, pnlAqi, pnlStatus, pnlQuote;
         private readonly CheckBox chkStartup;
@@ -57,6 +57,9 @@ namespace frmweatherwid
         private DateTime? lastUpdated;
         private bool lastFetchFailed;
         private bool isUpdating;
+        private bool isLocating;
+        private bool relocateOnNextRefresh;          // set after resume from sleep
+        private bool refreshQueued, relocateQueued;  // request that arrived while updating
         private int loadingDots;
         private bool started;
         private bool suppressStartupEvent;
@@ -85,15 +88,19 @@ namespace frmweatherwid
             BackgroundImageLayout = ImageLayout.None; // wallpapers are pre-scaled to ClientSize
             KeyPreview            = true;
 
-            var lblCity = new Label
+            // Start with the last known place (instant), re-detected in OnStartedAsync.
+            location = locationService.ManualLocation ?? locationService.CachedLocation ?? LocationService.DefaultLocation;
+
+            lblCity = new Label
             {
-                AutoSize  = true,
-                Font      = FontCity,
-                ForeColor = Color.DodgerBlue,
-                BackColor = Color.Transparent,
-                Text      = CityDisplay,
-                Location  = new Point(190, 15),
+                AutoSize     = false,
+                Bounds       = new Rectangle(190, 10, 206, 58),
+                TextAlign    = ContentAlignment.MiddleLeft,
+                AutoEllipsis = true,
+                ForeColor    = Color.DodgerBlue,
+                BackColor    = Color.Transparent,
             };
+            SetCityLabel(location.Name);
 
             pictureWeather = new PictureBox
             {
@@ -222,7 +229,7 @@ namespace frmweatherwid
             InitStartupSetting();
 
             // Weather first; wallpaper and quotes are cosmetic and load in the background.
-            var weatherTask = UpdateWeatherAsync();
+            var weatherTask = UpdateWeatherAsync(relocate: true);
             _ = LoadWallpapersAsync();
             _ = LoadQuotesAsync();
             await weatherTask;
@@ -284,7 +291,9 @@ namespace frmweatherwid
                 if (!IsHandleCreated || IsDisposed) return;
                 BeginInvoke(() =>
                 {
-                    if (isUpdating || IsDisposed) return;
+                    if (IsDisposed) return;
+                    relocateOnNextRefresh = true; // laptop may have moved while asleep
+                    if (isUpdating) return;
                     refreshTimer.Stop();
                     refreshTimer.Interval = ResumeDelayMs;
                     refreshTimer.Start();
@@ -295,10 +304,19 @@ namespace frmweatherwid
 
         // ================================================================== weather
 
-        private async Task UpdateWeatherAsync()
+        /// <param name="relocate">Re-detect the location first (startup, resume, manual refresh, city change).</param>
+        private async Task UpdateWeatherAsync(bool relocate = false)
         {
-            if (isUpdating) return; // timer + tray menu could overlap
+            relocate |= relocateOnNextRefresh;
+            if (isUpdating)
+            {
+                // timer / tray menu / city change overlapped — run once more when the current update ends
+                refreshQueued  = true;
+                relocateQueued |= relocate;
+                return;
+            }
             isUpdating = true;
+            relocateOnNextRefresh = false;
             refreshTimer.Stop();
             loadingDots = 0;
             loadingTimer.Start();
@@ -306,8 +324,19 @@ namespace frmweatherwid
 
             try
             {
-                var weatherTask = weatherService.GetCurrentAsync();
-                var aqiTask     = weatherService.GetUsAqiAsync();
+                if (relocate)
+                {
+                    isLocating = true;
+                    pnlStatus.Invalidate();
+                    var found = await locationService.ResolveAsync();
+                    isLocating = false;
+                    if (IsDisposed) return;
+                    ApplyLocation(found);
+                }
+
+                var loc         = location;
+                var weatherTask = weatherService.GetCurrentAsync(loc.Latitude, loc.Longitude);
+                var aqiTask     = weatherService.GetUsAqiAsync(loc.Latitude, loc.Longitude);
                 var data        = await weatherTask;
                 var aqi         = await aqiTask;
                 if (IsDisposed) return;
@@ -331,6 +360,7 @@ namespace frmweatherwid
             finally
             {
                 isUpdating = false;
+                isLocating = false;
                 if (!IsDisposed)
                 {
                     loadingTimer.Stop();
@@ -342,8 +372,61 @@ namespace frmweatherwid
                     pnlAqi.Invalidate();
                     pnlStatus.Invalidate();
                     UpdateTray();
+
+                    if (refreshQueued)
+                    {
+                        bool again = relocateQueued;
+                        refreshQueued = relocateQueued = false;
+                        BeginInvoke(new Action(async () => await UpdateWeatherAsync(again)));
+                    }
                 }
             }
+        }
+
+        private void ApplyLocation(GeoLocation found)
+        {
+            // Moved somewhere else → old readings belong to the old place, don't show them under the new name.
+            if (found.DistanceKm(location) > 2)
+            {
+                weather     = null;
+                usAqi       = null;
+                lastUpdated = null;
+            }
+            location = found;
+            SetCityLabel(found.Name);
+        }
+
+        /// <summary>Largest font (28pt → 12pt) that fits the city name in the label.</summary>
+        private void SetCityLabel(string name)
+        {
+            Font font;
+            for (float size = 28f; ; size -= 2f)
+            {
+                font = new Font("Segoe UI", size, FontStyle.Bold);
+                if (size <= 12f || TextRenderer.MeasureText(name, font).Width <= lblCity.Width - 4) break;
+                font.Dispose();
+            }
+            lblCity.Font = font;
+            lblCity.Text = name;
+            cityFont?.Dispose();
+            cityFont = font;
+        }
+
+        private static string SourceLabel(LocationSource s) => s switch
+        {
+            LocationSource.Windows => "định vị Windows",
+            LocationSource.IP      => "theo IP",
+            LocationSource.Manual  => "chọn thủ công",
+            LocationSource.Cached  => "lần trước",
+            _                      => "mặc định",
+        };
+
+        private async Task PickCityAsync()
+        {
+            using var dlg = new CityPickerForm(locationService);
+            if (dlg.ShowDialog() != DialogResult.OK || dlg.Selected is not { } c) return;
+            locationService.ManualLocation = new GeoLocation(c.Latitude, c.Longitude, c.Name, LocationSource.Manual);
+            await UpdateWeatherAsync(relocate: true);
         }
 
         private static (int Index, string Label) ClassifyAqi(int aqi) => aqi switch
@@ -363,7 +446,7 @@ namespace frmweatherwid
             get
             {
                 if (isUpdating)
-                    return "Loading" + new string('.', loadingDots % 4);
+                    return (isLocating ? "Locating" : "Loading") + new string('.', loadingDots % 4);
                 if (lastFetchFailed)
                     return lastUpdated is { } t ? $"Offline · last {t:HH:mm}" : "Offline · retrying...";
                 return lastUpdated is { } u ? $"Updated {u:HH:mm} · {weather!.Source}" : "Updated --:--";
@@ -511,15 +594,31 @@ namespace frmweatherwid
             mnuRefresh.Click += async (_, _) =>
             {
                 mnuRefresh.Enabled = false;
-                try { await UpdateWeatherAsync(); }
+                try { await UpdateWeatherAsync(relocate: true); }
                 finally { mnuRefresh.Enabled = true; }
             };
 
-            menu.Items.AddRange([mnuToggle, mnuRefresh, new ToolStripSeparator(),
-                                 new ToolStripMenuItem("Thoát", null, (_, _) => Application.Exit())]);
-            menu.Opening += (_, _) => mnuToggle.Text = Visible ? "Ẩn Widget" : "Hiện Widget";
+            // 📍 Location submenu
+            var mnuCurrent = new ToolStripMenuItem { Enabled = false };
+            var mnuAuto    = new ToolStripMenuItem("Tự động định vị", null, async (_, _) =>
+            {
+                locationService.ManualLocation = null;
+                await UpdateWeatherAsync(relocate: true);
+            });
+            var mnuPick     = new ToolStripMenuItem("Chọn thành phố…", null, async (_, _) => await PickCityAsync());
+            var mnuLocation = new ToolStripMenuItem("📍 Vị trí");
+            mnuLocation.DropDownItems.AddRange([mnuCurrent, new ToolStripSeparator(), mnuAuto, mnuPick]);
 
-            var icon = new NotifyIcon { Text = $"Weather Widget – {CityDisplay}", ContextMenuStrip = menu, Visible = true };
+            menu.Items.AddRange([mnuToggle, mnuRefresh, mnuLocation, new ToolStripSeparator(),
+                                 new ToolStripMenuItem("Thoát", null, (_, _) => Application.Exit())]);
+            menu.Opening += (_, _) =>
+            {
+                mnuToggle.Text  = Visible ? "Ẩn Widget" : "Hiện Widget";
+                mnuCurrent.Text = $"Hiện tại: {location.Name} ({SourceLabel(location.Source)})";
+                mnuAuto.Checked = location.Source != LocationSource.Manual;
+            };
+
+            var icon = new NotifyIcon { Text = "Weather Widget", ContextMenuStrip = menu, Visible = true };
             icon.MouseClick += (_, e) => { if (e.Button == MouseButtons.Left) ToggleWidget(); };
             return icon;
         }
@@ -556,8 +655,8 @@ namespace frmweatherwid
             }
 
             var tip = w is null
-                ? $"{CityDisplay}: --"
-                : $"{CityDisplay}: {w.TempC:0.#}°C\nHumidity: {w.Humidity:0}%\nWind: {w.WindKph:0} km/h\nFeels like: {w.FeelsLikeC:0}°C";
+                ? $"{location.Name}: --"
+                : $"{location.Name}: {w.TempC:0.#}°C\nHumidity: {w.Humidity:0}%\nWind: {w.WindKph:0} km/h\nFeels like: {w.FeelsLikeC:0}°C";
             if (usAqi is { } aqi) tip += $"\nAQI: {aqi} ({ClassifyAqi(aqi).Label})";
             trayIcon.Text = tip.Length > 127 ? tip[..127] : tip;
         }
